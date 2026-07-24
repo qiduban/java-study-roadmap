@@ -9,3 +9,5 @@
 进度6：总结所学(今天在火车明日提交代码)2026.7.17
 进度7：了解api接口的概念，学习了不同的string类型创建方法的内存原理2026.7.18
 进度8：进一步学习string类型数据，了解stringbuilder基本概念2026.7.21
+进度9：熟悉stringbuilder，stringjioner，的基本原理和用途，写了个简单的stringbuilder测试数组2026.7.22
+进度10；了解ArrayList容器的原理，了解stringbuilder拼接数组是不同情况的内存分配原理， 写了一个简单的ArrayList容器测试文件2026.7.22
