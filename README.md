@@ -12,4 +12,4 @@
 进度9：熟悉stringbuilder，stringjioner，的基本原理和用途，写了个简单的stringbuilder测试数组2026.7.23
 进度10：了解ArrayList容器的原理，了解stringbuilder拼接数组是不同情况的内存分配原理， 写了一个简单的ArrayList容器测试文件2026.7.24
 进度11：了解static静态变量的原理并运用在了类的创建中，理解了static内存分布原理2026.7.25
-
+进度12：静态只能访问静态，this的地址是调用这个方法的对象，了解了继承的概念2026.7.27
