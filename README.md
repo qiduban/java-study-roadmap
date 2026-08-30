@@ -33,6 +33,4 @@
 进度29：Hashset集合原理，Treeset原理，2026.8.24
 进度30 ：TreeSet，比较器的自定义排序2026.8.25
 进度31：了解了双链集合Map的基本概念2026.8.26
-111
-
-11
+进度32：Map集合的三种遍历方式，增强for遍历，创建Set集合利用迭代器进行遍历，.forEach（）lambda表达式遍历，Map.foreach本质是java创建一个Map.Entry<V,K>类型的Set随后增强for存储键值对2026.8.30
