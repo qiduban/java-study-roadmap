@@ -1,399 +1,226 @@
-package com.java40_Map.TreeMap;
+package com.java40_Map.LinkHashMap;
 
-import java.util.TreeMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 
 public class demo1 {
+    //LinkedHashMap顾名思义linked连接的代表有序
+    //底层数据结构是依然哈希表，只是每个键值对元素又额外的多了一个双链表的机制记录存储的顺序。
     public static void main(String[] args) {
-        student a = new student("a", 3, 3);
-        student b = new student("b", 1, 1);
-        student c = new student("c", 5, 5);
-        student d = new student("d", 4, 4);
-        student e = new student("e", 2, 2);
-        TreeMap<Integer , String> Tm = new TreeMap<>((o1,o2)->o2 - o1);
-        Tm.put(a.ID,a.Name);
-        Tm.put(b.ID,b.Name);
-        Tm.put(c.ID,c.Name);
-        Tm.put(d.ID,d.Name);
-        Tm.put(e.ID,e.Name);
-        System.out.println(Tm);
+        LinkedHashMap<String,Integer> Map = new LinkedHashMap<>();
+        Map.put("a",123);
+        Map.put("b",323);
+        Map.put("c",2343);
+        Map.put("e",1223);
+        Map.put("f",122);
+        Map.forEach((o1,o2)-> System.out.println(o1 + " = " + o2));
         /*
-         * ============================ TreeMap ============================
+         * ========================= LinkedHashMap =========================
          *
          * 1. 基本定义
          * -------------------------------------------------
-         * TreeMap 是 Map 接口的一个实现，
-         * 同时实现了 SortedMap、NavigableMap。
+         * LinkedHashMap 是 HashMap 的子类。
          *
          * 核心特点：
+         *     HashMap + 双向链表
          *
-         *     按照 Key 自动排序
-         *
-         * 注意：
-         *     TreeMap 是按照 Key 排序，
-         *     不是按照 Value 排序。
+         * 既拥有 HashMap 的快速查找能力，
+         * 又可以维护 Map 中元素的顺序。
          *
          *
          * 2. 底层数据结构
          * -------------------------------------------------
-         * TreeMap 底层使用红黑树。
+         * LinkedHashMap 底层本质上仍然是 HashMap 的哈希表，
+         * 在此基础上增加了一条双向链表。
          *
-         * 红黑树是一种自平衡二叉搜索树。
+         * HashMap 负责：
+         *     根据 key 快速定位数据
          *
-         * 因此 TreeMap 中的数据整体保持有序。
+         * 双向链表负责：
+         *     维护元素之间的顺序
          *
          * 可以理解为：
          *
-         *             20
-         *            /  \
-         *          10    30
-         *         / \      \
-         *        5  15      40
+         *     哈希表：
+         *         key -> hash -> bucket -> node
          *
-         * 红黑树会通过旋转、重新着色等方式保持平衡。
+         *     双向链表：
+         *         A <-> B <-> C <-> D
          *
          *
-         * 3. TreeMap 与 HashMap 的核心区别
+         * 3. 为什么 LinkedHashMap 能保持顺序？
          * -------------------------------------------------
+         * 因为每个节点除了 HashMap 中原有的数据外，
+         * 还额外维护：
          *
-         * HashMap：
-         *     通过 hash 定位元素
-         *     平均 O(1)
-         *     不保证顺序
+         *     before
+         *     after
          *
-         * TreeMap：
-         *     通过比较 Key 定位元素
-         *     O(log n)
-         *     按 Key 排序
+         * 用来保存前驱节点和后继节点。
+         *
+         * 所以遍历 LinkedHashMap 时，
+         * 可以按照双向链表维护的顺序进行遍历。
          *
          *
-         * 4. TreeMap 的排序依据
+         * 4. 默认顺序：插入顺序
          * -------------------------------------------------
-         * TreeMap 排序依赖：
+         * 默认：
          *
-         *     Comparator
-         *     或
-         *     Comparable
-         *
-         *
-         * 方式一：传入 Comparator
-         *
-         *     new TreeMap<>(Comparator.reverseOrder());
-         *
-         * 方式二：Key 实现 Comparable
-         *
-         *     class Student implements Comparable<Student>
-         *
-         *
-         * 如果有 Comparator，
-         * 则按照 Comparator 的规则比较 Key。
-         *
-         *
-         * 5. 自定义排序是按照 Key 还是 Value？
-         * -------------------------------------------------
-         * TreeMap 自定义排序：
-         *
-         *     只能直接作用于 Key
+         *     accessOrder = false
          *
          * 例如：
          *
-         *     TreeMap<Integer, String>
+         *     put(3, "C")
+         *     put(1, "A")
+         *     put(2, "B")
          *
-         * Comparator 比较的是：
+         * 遍历结果：
          *
-         *     1、2、3、4...
+         *     3 -> 1 -> 2
          *
-         * 而不是：
-         *
-         *     "A"、"B"、"C"...
-         *
-         * TreeMap 本身没有“按照 Value 排序”的模式。
+         * 即按照元素第一次插入的顺序遍历。
          *
          *
-         * 6. 如果想按照 Value 排序怎么办？
+         * 5. accessOrder = true
          * -------------------------------------------------
-         * TreeMap 本身不负责 Value 排序。
+         * LinkedHashMap 可以通过构造方法开启“访问顺序”：
          *
-         * 一般做法：
+         *     new LinkedHashMap<>(16, 0.75f, true);
          *
-         *     先获取 entrySet()
-         *     再把 Entry 放入 List
-         *     最后根据 Value 使用 Comparator 排序
+         * 此时：
          *
-         * 即：
+         *     accessOrder = true
          *
-         *     TreeMap     -> Key 排序
+         * 访问一个元素后，
+         * 该元素会移动到双向链表的尾部。
          *
-         *     List<Entry> -> 可以按 Value 排序
+         * 例如：
+         *
+         *     原来：1 -> 2 -> 3
+         *
+         *     get(1)
+         *
+         *     变成：2 -> 3 -> 1
+         *
+         * 此时：
+         *
+         *     头部 = 最久没有访问的元素
+         *     尾部 = 最近访问的元素
          *
          *
-         * 7. TreeMap 的 Key 必须可比较
+         * 6. LinkedHashMap 可以实现 LRU
          * -------------------------------------------------
-         * TreeMap 插入 Key 时，
-         * 必须能够判断两个 Key 的大小关系。
+         * LRU：
+         *     Least Recently Used
+         *     最近最少使用
          *
-         * 可以通过：
+         * LinkedHashMap 实现 LRU 的经典组合：
          *
-         *     Comparable
+         *     accessOrder = true
+         *     +
+         *     removeEldestEntry()
          *
-         * 或：
-         *
-         *     Comparator
-         *
-         * 如果既不能比较，
-         * 运行时可能出现：
-         *
-         *     ClassCastException
+         * 当缓存超过容量时，
+         * 删除链表头部的最老元素。
          *
          *
-         * 8. TreeMap 的 Key 唯一性
+         * 7. removeEldestEntry()
          * -------------------------------------------------
-         * HashMap 判断两个 Key 是否相同：
+         * LinkedHashMap 提供：
          *
-         *     hashCode() + equals()
+         *     protected boolean removeEldestEntry(...)
          *
-         * TreeMap 判断两个 Key 是否“相同”：
+         * 可以重写该方法控制是否删除最老元素。
          *
-         *     compareTo() == 0
+         * 例如：
          *
-         * 或：
-         *
-         *     Comparator.compare() == 0
-         *
-         * 也就是说：
-         *
-         *     TreeMap 的排序规则
-         *     同时决定了 Key 的“唯一性”。
-         *
-         * 如果 compare(a, b) == 0，
-         * TreeMap 会认为这两个 Key 在排序意义上相同，
-         * 后面的 Value 可能覆盖前面的 Value。
-         *
-         *
-         * 9. null
-         * -------------------------------------------------
-         * 默认情况下：
-         *
-         *     TreeMap 不支持 null key
-         *
-         * 因为 TreeMap 需要比较 Key，
-         * null 通常无法正常参与比较。
-         *
-         * Value：
-         *
-         *     可以为 null
-         *
-         *
-         * 10. 时间复杂度
-         * -------------------------------------------------
-         * 因为底层是红黑树：
-         *
-         *     get     O(log n)
-         *     put     O(log n)
-         *     remove  O(log n)
-         *
-         *
-         * 11. TreeMap 最大优势：范围查询
-         * -------------------------------------------------
-         * TreeMap 不仅能排序，
-         * 还可以快速进行范围操作。
-         *
-         * subMap(from, to)
-         *     获取某个范围内的数据
-         *
-         * headMap(to)
-         *     获取某个 Key 之前的数据
-         *
-         * tailMap(from)
-         *     获取某个 Key 之后的数据
-         *
-         *
-         * 12. subMap
-         * -------------------------------------------------
-         *
-         *     map.subMap(20, 50)
-         *
-         * 默认表示：
-         *
-         *     20 <= key < 50
-         *
-         * 也可以：
-         *
-         *     map.subMap(20, true, 50, true)
+         *     return size() > 3;
          *
          * 表示：
+         *     容量超过 3 时，删除最老元素。
          *
-         *     20 <= key <= 50
+         * 这也是 LinkedHashMap 实现简单 LRU Cache 的核心。
          *
          *
-         * 13. headMap
+         * 8. get / put / remove
          * -------------------------------------------------
+         * get：
+         *     HashMap 中负责查找
          *
-         *     map.headMap(30)
+         *     如果 accessOrder = true，
+         *     访问后还会调整双向链表顺序。
          *
-         * 表示：
+         * put：
+         *     既要维护 HashMap，
+         *     又要维护双向链表。
          *
-         *     key < 30
-         *
-         * 也可以：
-         *
-         *     map.headMap(30, true)
-         *
-         * 表示：
-         *
-         *     key <= 30
+         * remove：
+         *     不仅要从 HashMap 删除，
+         *     还要从双向链表中摘除节点。
          *
          *
-         * 14. tailMap
+         * 9. 时间复杂度
          * -------------------------------------------------
+         * 正常情况下：
          *
-         *     map.tailMap(30)
+         *     get     O(1)
+         *     put     O(1)
+         *     remove  O(1)
          *
-         * 表示：
+         * 因为：
+         *     HashMap 平均查找 O(1)
+         *     双向链表节点移动/删除 O(1)
          *
-         *     key >= 30
          *
-         *
-         * 15. 查找前驱/后继
+         * 10. 是否线程安全
          * -------------------------------------------------
-         * TreeMap 提供：
+         * LinkedHashMap 本身不是线程安全的。
          *
-         *     lowerKey()
-         *     floorKey()
-         *     ceilingKey()
-         *     higherKey()
-         *
-         * 非常重要。
-         *
-         * 假设已有：
-         *
-         *     10 20 30 40
-         *
-         * 查找 25：
-         *
-         *     lowerKey(25)
-         *         -> 严格小于 25 的最大 Key
-         *         -> 20
-         *
-         *     floorKey(25)
-         *         -> 小于等于 25 的最大 Key
-         *         -> 20
-         *
-         *     ceilingKey(25)
-         *         -> 大于等于 25 的最小 Key
-         *         -> 30
-         *
-         *     higherKey(25)
-         *         -> 严格大于 25 的最小 Key
-         *         -> 30
-         *
-         * 记忆：
-         *
-         *     lower    <
-         *     floor    <=
-         *     ceiling  >=
-         *     higher   >
+         * 如果多个线程同时修改，
+         * 需要额外的同步措施。
          *
          *
-         * 16. Entry 版本
+         * 11. null
          * -------------------------------------------------
-         * 除了：
+         * LinkedHashMap：
          *
-         *     lowerKey()
-         *     floorKey()
-         *     ceilingKey()
-         *     higherKey()
-         *
-         * 还有：
-         *
-         *     lowerEntry()
-         *     floorEntry()
-         *     ceilingEntry()
-         *     higherEntry()
-         *
-         * 区别：
-         *
-         *     xxxKey()
-         *         -> 返回 Key
-         *
-         *     xxxEntry()
-         *         -> 返回 Entry<Key, Value>
+         *     允许一个 null key
+         *     允许多个 null value
          *
          *
-         * 17. 获取最小/最大 Key
-         * -------------------------------------------------
-         *
-         *     firstKey()
-         *         -> 最小 Key
-         *
-         *     lastKey()
-         *         -> 最大 Key
-         *
-         * 还可以：
-         *
-         *     firstEntry()
-         *     lastEntry()
-         *
-         *
-         * 18. 降序遍历
-         * -------------------------------------------------
-         *
-         *     descendingMap()
-         *
-         * 可以得到一个按照 Key 降序排列的 Map 视图。
-         *
-         *     descendingKeySet()
-         *
-         * 可以得到降序的 Key 集合。
-         *
-         *
-         * 19. TreeMap vs HashMap
+         * 12. LinkedHashMap vs HashMap
          * -------------------------------------------------
          *
          * HashMap：
-         *     底层哈希表
-         *     平均 O(1)
-         *     不保证顺序
-         *     适合快速查找
+         *     哈希表
+         *     不保证遍历顺序
          *
-         * TreeMap：
-         *     底层红黑树
-         *     O(log n)
-         *     按 Key 排序
-         *     适合有序数据、范围查询
+         * LinkedHashMap：
+         *     哈希表 + 双向链表
+         *     默认维护插入顺序
          *
          *
-         * 20. TreeMap vs LinkedHashMap
+         * 13. LinkedHashMap vs TreeMap
          * -------------------------------------------------
          *
          * LinkedHashMap：
          *     按插入顺序 / 访问顺序
          *
          * TreeMap：
-         *     按 Key 的排序规则
+         *     按 Key 的大小排序
          *
-         * 记忆：
-         *
-         *     LinkedHashMap = 记住顺序
-         *
-         *     TreeMap = 维护排序
+         * 注意：
+         *     LinkedHashMap 的“有序”
+         *     ≠ TreeMap 的“排序”
          *
          *
-         * 21. 面试核心一句话
+         * 14. 面试核心一句话
          * -------------------------------------------------
-         * TreeMap = 红黑树 + Key 排序
+         * LinkedHashMap = HashMap + 双向链表
          *
-         * 排序规则来自 Comparator 或 Comparable。
-         *
-         * get / put / remove 都是 O(log n)。
-         *
-         * TreeMap 的核心优势不是“查找比 HashMap 快”，
-         * 而是：
-         *
-         *     有序
-         *     +
-         *     范围查询
-         *     +
-         *     前驱/后继查询
+         * 默认按照插入顺序遍历，
+         * accessOrder=true 时按照访问顺序遍历，
+         * 配合 removeEldestEntry() 可以实现 LRU。
          *
          * ================================================================
          */
