@@ -1,228 +1,128 @@
-package com.java40_Map.LinkHashMap;
-
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
+package com.java41;
 
 public class demo1 {
-    //LinkedHashMap顾名思义linked连接的代表有序
-    //底层数据结构是依然哈希表，只是每个键值对元素又额外的多了一个双链表的机制记录存储的顺序。
-    public static void main(String[] args) {
-        LinkedHashMap<String,Integer> Map = new LinkedHashMap<>();
-        Map.put("a",123);
-        Map.put("b",323);
-        Map.put("c",2343);
-        Map.put("e",1223);
-        Map.put("f",122);
-        Map.forEach((o1,o2)-> System.out.println(o1 + " = " + o2));
-        /*
-         * ========================= LinkedHashMap =========================
-         *
-         * 1. 基本定义
-         * -------------------------------------------------
-         * LinkedHashMap 是 HashMap 的子类。
-         *
-         * 核心特点：
-         *     HashMap + 双向链表
-         *
-         * 既拥有 HashMap 的快速查找能力，
-         * 又可以维护 Map 中元素的顺序。
-         *
-         *
-         * 2. 底层数据结构
-         * -------------------------------------------------
-         * LinkedHashMap 底层本质上仍然是 HashMap 的哈希表，
-         * 在此基础上增加了一条双向链表。
-         *
-         * HashMap 负责：
-         *     根据 key 快速定位数据
-         *
-         * 双向链表负责：
-         *     维护元素之间的顺序
-         *
-         * 可以理解为：
-         *
-         *     哈希表：
-         *         key -> hash -> bucket -> node
-         *
-         *     双向链表：
-         *         A <-> B <-> C <-> D
-         *
-         *
-         * 3. 为什么 LinkedHashMap 能保持顺序？
-         * -------------------------------------------------
-         * 因为每个节点除了 HashMap 中原有的数据外，
-         * 还额外维护：
-         *
-         *     before
-         *     after
-         *
-         * 用来保存前驱节点和后继节点。
-         *
-         * 所以遍历 LinkedHashMap 时，
-         * 可以按照双向链表维护的顺序进行遍历。
-         *
-         *
-         * 4. 默认顺序：插入顺序
-         * -------------------------------------------------
-         * 默认：
-         *
-         *     accessOrder = false
-         *
-         * 例如：
-         *
-         *     put(3, "C")
-         *     put(1, "A")
-         *     put(2, "B")
-         *
-         * 遍历结果：
-         *
-         *     3 -> 1 -> 2
-         *
-         * 即按照元素第一次插入的顺序遍历。
-         *
-         *
-         * 5. accessOrder = true
-         * -------------------------------------------------
-         * LinkedHashMap 可以通过构造方法开启“访问顺序”：
-         *
-         *     new LinkedHashMap<>(16, 0.75f, true);
-         *
-         * 此时：
-         *
-         *     accessOrder = true
-         *
-         * 访问一个元素后，
-         * 该元素会移动到双向链表的尾部。
-         *
-         * 例如：
-         *
-         *     原来：1 -> 2 -> 3
-         *
-         *     get(1)
-         *
-         *     变成：2 -> 3 -> 1
-         *
-         * 此时：
-         *
-         *     头部 = 最久没有访问的元素
-         *     尾部 = 最近访问的元素
-         *
-         *
-         * 6. LinkedHashMap 可以实现 LRU
-         * -------------------------------------------------
-         * LRU：
-         *     Least Recently Used
-         *     最近最少使用
-         *
-         * LinkedHashMap 实现 LRU 的经典组合：
-         *
-         *     accessOrder = true
-         *     +
-         *     removeEldestEntry()
-         *
-         * 当缓存超过容量时，
-         * 删除链表头部的最老元素。
-         *
-         *
-         * 7. removeEldestEntry()
-         * -------------------------------------------------
-         * LinkedHashMap 提供：
-         *
-         *     protected boolean removeEldestEntry(...)
-         *
-         * 可以重写该方法控制是否删除最老元素。
-         *
-         * 例如：
-         *
-         *     return size() > 3;
-         *
-         * 表示：
-         *     容量超过 3 时，删除最老元素。
-         *
-         * 这也是 LinkedHashMap 实现简单 LRU Cache 的核心。
-         *
-         *
-         * 8. get / put / remove
-         * -------------------------------------------------
-         * get：
-         *     HashMap 中负责查找
-         *
-         *     如果 accessOrder = true，
-         *     访问后还会调整双向链表顺序。
-         *
-         * put：
-         *     既要维护 HashMap，
-         *     又要维护双向链表。
-         *
-         * remove：
-         *     不仅要从 HashMap 删除，
-         *     还要从双向链表中摘除节点。
-         *
-         *
-         * 9. 时间复杂度
-         * -------------------------------------------------
-         * 正常情况下：
-         *
-         *     get     O(1)
-         *     put     O(1)
-         *     remove  O(1)
-         *
-         * 因为：
-         *     HashMap 平均查找 O(1)
-         *     双向链表节点移动/删除 O(1)
-         *
-         *
-         * 10. 是否线程安全
-         * -------------------------------------------------
-         * LinkedHashMap 本身不是线程安全的。
-         *
-         * 如果多个线程同时修改，
-         * 需要额外的同步措施。
-         *
-         *
-         * 11. null
-         * -------------------------------------------------
-         * LinkedHashMap：
-         *
-         *     允许一个 null key
-         *     允许多个 null value
-         *
-         *
-         * 12. LinkedHashMap vs HashMap
-         * -------------------------------------------------
-         *
-         * HashMap：
-         *     哈希表
-         *     不保证遍历顺序
-         *
-         * LinkedHashMap：
-         *     哈希表 + 双向链表
-         *     默认维护插入顺序
-         *
-         *
-         * 13. LinkedHashMap vs TreeMap
-         * -------------------------------------------------
-         *
-         * LinkedHashMap：
-         *     按插入顺序 / 访问顺序
-         *
-         * TreeMap：
-         *     按 Key 的大小排序
-         *
-         * 注意：
-         *     LinkedHashMap 的“有序”
-         *     ≠ TreeMap 的“排序”
-         *
-         *
-         * 14. 面试核心一句话
-         * -------------------------------------------------
-         * LinkedHashMap = HashMap + 双向链表
-         *
-         * 默认按照插入顺序遍历，
-         * accessOrder=true 时按照访问顺序遍历，
-         * 配合 removeEldestEntry() 可以实现 LRU。
-         *
-         * ================================================================
-         */
+    public static int GetSum(int... a){
+    int Sum = 0;
+    for(int sum : a){
+        Sum += sum;
     }
+    return Sum;
+}
+    public static void main(String[] args) {
+        int sum = GetSum(1,2,3,4,5,6);
+        System.out.println(sum);
+    }
+    /*
+     * ==================== Java 可变参数（Varargs）====================
+     *
+     * 1. 基本语法
+     *    类型... 参数名
+     *
+     *    public static void test(int... nums) {
+     *    }
+     *
+     * 2. 可变参数本质
+     *    可变参数本质上就是数组：
+     *
+     *    int... nums  <=>  int[] nums
+     *
+     *    所以在方法内部可以直接使用：
+     *    nums.length
+     *    nums[0]
+     *    for (int num : nums) {}
+     *
+     * 3. 调用方式
+     *    test();                  // 可以传 0 个参数
+     *    test(1);                 // 传 1 个参数
+     *    test(1, 2, 3);           // 传多个参数
+     *
+     *    int[] arr = {1, 2, 3};
+     *    test(arr);               // 也可以直接传数组
+     *
+     * 4. 可变参数可以不传值
+     *    test();
+     *    此时 nums 是一个长度为 0 的数组，而不是 null。
+     *
+     * 5. 可以传 null
+     *    test((int[]) null);
+     *    此时 nums == null。
+     *
+     *    注意：
+     *    test(null) 在存在多个重载方法时可能产生歧义。
+     *
+     * 6. 可变参数必须放在参数列表的最后
+     *
+     *    正确：
+     *    public static void test(String name, int... nums) {}
+     *    可变参数有多少吃多少会导致第二个 name无法正常录入
+     *
+     *    错误：
+     *    public static void test(int... nums, String name) {}
+     *
+     * 7. 一个方法最多只能有一个可变参数
+     *
+     *    错误：
+     *    public static void test(int... a, String... b) {}
+     *
+     * 8. 可变参数可以和普通参数一起使用
+     *
+     *    public static void test(String name, int... scores) {}
+     *
+     *    test("张三", 90, 80, 95);
+     *
+     *    name   = "张三"
+     *    scores = {90, 80, 95}
+     *
+     * 9. 可变参数不能和数组进行重载
+     *
+     *    下面两个方法不能同时存在：
+     *
+     *    test(int[] nums)
+     *    test(int... nums)
+     *
+     *    因为 int... 本质上就是 int[]。
+     *
+     * 10. 可变参数和普通参数重载
+     *
+     *    public static void test(int x) {}
+     *    public static void test(int... x) {}
+     *
+     *    test(10);
+     *
+     *    优先调用 test(int x)，
+     *    因为普通参数的匹配优先级高于可变参数。
+     *
+     * 11. main 方法也可以使用可变参数
+     *
+     *    public static void main(String... args) {}
+     *
+     *    等价于：
+     *
+     *    public static void main(String[] args) {}
+     *
+     * 12. 可变参数可以使用各种类型
+     *
+     *    String... names
+     *    int... nums
+     *    Object... objects
+     *    T... values
+     *
+     * 13. 最重要的面试总结
+     *
+     *    可变参数 = 本质是数组
+     *
+     *    ① 可以传 0 个、1 个或多个参数
+     *    ② 可以直接传数组
+     *    ③ 一个方法最多只能有一个可变参数
+     *    ④ 可变参数必须放在最后
+     *    ⑤ int... 和 int[] 不能重载
+     *    ⑥ 普通参数匹配优先于可变参数
+     *
+     * ==================== 一句话记忆 ====================
+     *
+     *    可变参数本质是数组，
+     *    一个方法最多一个，
+     *    而且必须放最后。
+     *
+     */
 }
