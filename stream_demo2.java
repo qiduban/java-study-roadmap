@@ -819,6 +819,8 @@ package com.java42;
  */
 
 
+import com.sun.source.tree.NewArrayTree;
+
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -901,5 +903,9 @@ public class stream_demo2 {
 //Stream接口中静态方法of的细节//方法的形参是一个可变参数，可以传递一堆零散的数据，也可以传递数组
 //但是数组必须是引用数据类型的，如果传递基本数据类型，是会把整个数组当做一个元素，放到Stream当中。
         Stream.of(arr1).forEach(s-> System.out.println(s));//[I@41629346
+        //toArray方法的参数的作用:负责创建一
+        //toArray方法的底层，会依次得到流里面的每类型的数组一个数据，并把数据放到数组当中
+        //toArray方法的返回值:是一个装着流里面所有数据的数组
+        String []arr = list.stream().toArray(o1 -> new String[o1]);
     }
 }
