@@ -36,6 +36,7 @@ public class demmo1 {
             System.out.println(Arrays.toString(arr));
         Consumer<String> consumer = System.out::println;
         consumer.accept("114514");
+        //1.
     }
     public static  int subtraction(Integer o1 , Integer o2){
         return o1 - o2;
