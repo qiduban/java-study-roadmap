@@ -37,3 +37,4 @@
 进度33：hashMap，linkedHashMap，TreeMap相关知识点（与TreeSet，LinkedSet，HashSet相似）2026.8.31
 进度34：了解工具类collections，和stream流2026.9.1
 进度35：熟悉stream中的collect等结束接口，collect保存为数组，保存为Map类型的方法，保存为List的方法，了解方法的引用的写法2026.9.2-6
+进度36：熟悉方法的引用的写法2026.9.7
