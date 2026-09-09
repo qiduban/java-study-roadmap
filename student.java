@@ -1,18 +1,17 @@
-package com.java40_Map.TreeMap;
+package com.java44;
 
 import java.util.Objects;
 
-public class student {
+public class student implements Comparable<student>{
     public String Name;
     public Integer Age;
-    public Integer ID;
+    public student(){
 
-    public student(String name, Integer age, Integer ID) {
-        Name = name;
-        Age = age;
-        this.ID = ID;
     }
-
+    public student(String str) {
+        Name = str.split(",")[0];
+        Age = Integer.parseInt(str.split(",")[1]);
+    }
     public String getName() {
         return Name;
     }
@@ -21,32 +20,20 @@ public class student {
         Name = name;
     }
 
-    public Integer getAge() {
+    public int getAge() {
         return Age;
     }
 
-    public void setAge(Integer age) {
+    public void setAge(int age) {
+        if(age > 40){
+            throw new RuntimeException();//自定义异常
+        }
         Age = age;
     }
 
-    public Integer getID() {
-        return ID;
-    }
-
-    public void setID(Integer ID) {
-        this.ID = ID;
-    }
-
-    @Override
-    public boolean equals(Object o) {
-        if (o == null || getClass() != o.getClass()) return false;
-        student student = (student) o;
-        return Objects.equals(Name, student.Name) && Objects.equals(Age, student.Age) && Objects.equals(ID, student.ID);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(Name, Age, ID);
+    public student(String name, int age) {
+        Name = name;
+        Age = age;
     }
 
     @Override
@@ -54,8 +41,32 @@ public class student {
         return "student{" +
                 "Name='" + Name + '\'' +
                 ", Age=" + Age +
-                ", ID=" + ID +
                 '}';
     }
-}
+    public void study() {
+        System.out.println("学生正在学习");
+    }
 
+    public int getNameLength() {
+        return Name.length();
+    }
+    @Override
+    public boolean equals(Object o) {
+        if (o == null || getClass() != o.getClass()) return false;
+        student student = (student) o;
+        return Age == student.Age && Objects.equals(Name, student.Name);
+    }
+
+    @Override
+    public int hashCode() {
+        return Objects.hash(Name, Age);
+    }
+
+    @Override
+    public int compareTo(student o) {
+        System.out.println("this:" + this.Age);
+        System.out.println("o:" + o.Age);
+        int result = this.getAge() - o.getAge();
+        return result;
+    }
+}
