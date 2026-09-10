@@ -25,6 +25,8 @@ public class catch_demo1 {
             System.out.println("索引越界了");
         }catch(ArithmeticException e){
             System.out.println("算数异常");
+        }catch(Exception e){
+            System.out.println("我是父类");
         };
         System.out.println("看看我执行了吗 ");
     }
