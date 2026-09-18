@@ -1,7 +1,9 @@
 package com.java45;
 
 import java.io.File;
+import java.io.FilenameFilter;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.Arrays;
 
 public class File_demo1 {
@@ -74,10 +76,31 @@ public class File_demo1 {
         // ——————————————————————————————————————— 文件获取并遍历 ————————————————————————————————————————————
         //public File[] listfiles()         `    获取路径下的所有内容(包括隐藏内容)
         File file7 =new File("C:\\Users\\34005\\Desktop\\code");
-        File []files = file7.listFiles();
+        File []files = file7.listFiles(new FilenameFilter() {
+            @Override
+            public boolean accept(File dir, String name) {
+                return true;
+            }
+        });
         Arrays.stream(files).forEach(System.out::println);
         File []files1 = file7.listRoots();//获取系统盘符
         Arrays.stream(files1).forEach(System.out::println);
+        String []arr = file7.list(new FilenameFilter() {
+            @Override
+            //dir为父级路径
+            //name为子级路径
+            //返回值：若为true则当前路径保留
+            //     ：若为false则当前路径舍弃
+            public boolean accept(File dir, String name) {
+                String file_name = dir + name;
+                File srd = new File(dir ,name);
+                if(file_name.endsWith(".txt") && srd.isFile()){
+                    return true;
+                }
+                return false;
+            }
+        });
+        System.out.println(Arrays.toString(arr));
         /*
         • 当调用者File表示的路径不存在时，返回null
         • 当调用者File表示的路径是文件时，返回null
@@ -85,6 +108,7 @@ public class File_demo1 {
         • 当调用者File表示的路径是一个有内容的文件夹时，将里面所有文件和文件夹的路径放在File数组中返回
         • 当调用者File表示的路径是一个有隐藏文件的文件夹时，将里面所有文件和文件夹的路径放在File数组中返回，包含隐藏文件
         ● 当调用者File表示的路径是需要权限才能访问的文件夹时，返回null
+        注意file7为一个目录，若你想使用listfile等遍历方法，调用的对象必须是一个目录
          */
     }
 
