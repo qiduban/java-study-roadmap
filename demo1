@@ -1,0 +1,3 @@
+//创建字符缓冲输入流
+            Reader fr = new FileReader("D:\\Dev\\Projects\\study_day1\\src\\main\\java\\com\\java48\\demo");
+            BufferedReader bfr = new BufferedReader(fr);
