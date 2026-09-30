@@ -1,72 +1,50 @@
-package com.java44;
+package com.java48;
 
-import java.util.Objects;
+import java.io.Serializable;
 
-public class student implements Comparable<student>{
-    public String Name;
-    public Integer Age;
+public class student implements Serializable {//对象要是想实现序列化就必须实现SERIALIZANBLE接口
+    String name;
+    int age;
+    transient int  num;//将变量以transient修饰会导致此变量不参加序列化
     public student(){
 
     }
-    public student(String str) {
-        Name = str.split(",")[0];
-        Age = Integer.parseInt(str.split(",")[1]);
+    public student(String name, int age, int num) {
+        this.name = name;
+        this.age = age;
+        this.num = num;
     }
+
     public String getName() {
-        return Name;
+        return name;
     }
 
     public void setName(String name) {
-        Name = name;
+        this.name = name;
     }
 
     public int getAge() {
-        return Age;
+        return age;
     }
 
     public void setAge(int age) {
-        if(age > 40){
-            throw new RuntimeException();//自定义异常
-        }
-        Age = age;
+        this.age = age;
     }
 
-    public student(String name, int age) {
-        Name = name;
-        Age = age;
+    public int getNum() {
+        return num;
+    }
+
+    public void setNum(int num) {
+        this.num = num;
     }
 
     @Override
     public String toString() {
         return "student{" +
-                "Name='" + Name + '\'' +
-                ", Age=" + Age +
+                "name='" + name + '\'' +
+                ", age=" + age +
+                ", num=" + num +
                 '}';
-    }
-    public void study() {
-        System.out.println("学生正在学习");
-    }
-
-    public int getNameLength() {
-        return Name.length();
-    }
-    @Override
-    public boolean equals(Object o) {
-        if (o == null || getClass() != o.getClass()) return false;
-        student student = (student) o;
-        return Age == student.Age && Objects.equals(Name, student.Name);
-    }
-
-    @Override
-    public int hashCode() {
-        return Objects.hash(Name, Age);
-    }
-
-    @Override
-    public int compareTo(student o) {
-        System.out.println("this:" + this.Age);
-        System.out.println("o:" + o.Age);
-        int result = this.getAge() - o.getAge();
-        return result;
     }
 }
