@@ -49,6 +49,7 @@ CREATE TABLE demo1(
 #创建表时添加唯一约束
 CREATE TABLE demo2(
     id INT,
+    receiver int not null,
     CONSTRAINT uk_id UNIQUE (id)
 );
 #创建表时添加外部约束
@@ -122,3 +123,32 @@ TRUNCATE TABLE DEMO;
 # DELETE：可以挑着删，也可以全部删。
 # TRUNCATE：整张表清空，不能挑着删。
 # DROP：连表结构一起删除。
+
+# SELECT * | {[DISTINCT] column | expression [alias], ...} FROM table;
+# SELECT语句从数据库中返回信息。使用一个SELECT语句，可以做下面的事:
+# 列选择:能够使用SELECT语句的列选择功能选择表中的列，这些列是想要用查询返回的。当查询时，能够返回列中的数据。
+# 行选择:能够使用SELECT语句的行选择功能选择表中的行，这些行是想要用查询返回的。能够使用不同的标准限制看见的行。
+# 连接:能够使用SELECT语句的连接功能来集合数据，这些数据被存储在不同的表中，在它们之间可以创建连接，查询出我们所关心的数据。
+# SELECT 确定哪些表 FROM 确定哪些表
+-- SELECT：指定要查询的字段列表
+-- DISTINCT：去除查询结果中的重复行
+-- column：字段名
+-- expression：表达式
+-- *：选择所有列
+-- AS alias：给查询字段设置别名
+-- FROM：指定查询的表
+-- WHERE：筛选满足条件的记录
+-- GROUP BY：按照指定字段分组
+-- HAVING：筛选分组后的结果
+-- ORDER BY：对查询结果排序
+-- ASC：升序（默认）
+-- DESC：降序
+-- LIMIT：限制返回的记录数量
+-- offset：偏移量，从 0 开始
+-- row_count：返回的记录数量
+USE lyt;
+DESC DEMO;
+DESC demo;
+desc demo3;
+SELECT * FROM demo;
+SELECT receiver FROM demo2 WHERE receiver = '姜明';
