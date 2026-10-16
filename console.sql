@@ -149,6 +149,130 @@ TRUNCATE TABLE DEMO;
 USE lyt;
 DESC DEMO;
 DESC demo;
-desc demo3;
+# desc demo3;  # demo3 已在第 78 行被 DROP，表不存在
 SELECT * FROM demo;
-SELECT receiver FROM demo2 WHERE receiver = '姜明';
+# SELECT receiver FROM demo2 WHERE receiver = '姜明';  # demo2 已在第 78 行被 DROP，表不存在
+USE lyt;
+SHOW TABLES;
+DESC demo;
+SHOW CREATE TABLE demo;
+USE wms;
+CREATE TABLE friend(
+    name VARCHAR(255) primary key,
+    height DOUBLE not null ,
+    weight DOUBLE not null ,
+    address VARCHAR(255) DEFAULT 'Unknow'
+);
+DESC friend;
+USE wms;
+SHOW TABLES ;
+INSERT INTO friend VALUES ('祁雷',1.78,138,DEFAULT);
+UPDATE friend SET height = 1.85 WHERE name = '祁雷';
+DROP TABLE friend;
+SELECT demo.id,
+       demo.name,
+       demo.address,
+       demo.id * 10
+FROM demo;
+SELECT  * FROM demo;
+#如果一行中的某列缺少一个数据值，该值被置为null，或者是包含一个空
+
+#SELECT 别名 AS 列别名 FRIM 表名 WHERE 条件；
+#注意：别名只改变查询结果的显示名称，不会修改表中真实的字段名。
+SELECT demo.name AS 姓名 FROM demo;
+#去除像同行：
+#           SELECT DISTINCT 列名 FROM 表名
+INSERT INTO DEMO VALUES (26,'吕峰','辽宁省沈阳市和平区光明街835号23栋993室');
+UPDATE demo SET address = '辽宁省沈阳市和平区光明街835号23栋943室' WHERE id = 26;
+SELECT DISTINCT demo.name FROM demo;
+SELECT name FROM demo;
+#distinct 是对结果集进行去重不是对某一列去重，像下列代码，即使name重复只要address不重复测不会被去重
+SELECT DISTINCT name , address from demo;
+#SELECT 的行限制 SELECT * | 投影列 FROM 表名 WHERE 选择条件；
+SELECT name FROM demo LIMIT 10;
+#限制只查询五条数据
+
+
+# -- ==================== MySQL 比较条件 ====================
+#
+# -- 1. 等于
+# WHERE age = 18;
+#
+# -- 2. 不等于（两种写法）
+# WHERE age != 18;
+# WHERE age <> 18;
+#
+# -- 3. 大于
+# WHERE age > 18;
+#
+# -- 4. 小于
+# WHERE age < 18;
+#
+# -- 5. 大于等于
+# WHERE age >= 18;
+#
+# -- 6. 小于等于
+# WHERE age <= 18;
+#
+# -- 7. 在指定范围内（包含边界值）
+# WHERE age BETWEEN 18 AND 30;
+#
+# -- 8. 不在指定范围内
+# WHERE age NOT BETWEEN 18 AND 30;
+#
+# -- 9. 在指定集合中
+# WHERE age IN (18, 20, 25);
+#
+# -- 10. 不在指定集合中
+# WHERE age NOT IN (18, 20, 25);
+#
+# -- 11. 模糊匹配：以“张”开头
+# WHERE name LIKE '张%';
+#
+# -- 12. 模糊匹配：以“张”结尾
+# WHERE name LIKE '%张';
+#
+# -- 13. 模糊匹配：包含“张”
+# WHERE name LIKE '%张%';
+#
+# -- 14. 模糊匹配：第二个字符是“张”
+# WHERE name LIKE '_张%';
+#
+# 模糊查询的通配符，作用不一样：
+# ‘%’：匹配 0 个、1 个或多个任意字符。
+# ‘_’：匹配 恰好 1 个任意字符。
+# -- 15. 判断为 NULL
+# WHERE age IS NULL;
+#
+# -- 16. 判断不为 NULL
+# WHERE age IS NOT NULL;
+#
+# -- 17. NULL 安全等于（NULL 与 NULL 比较也返回真）
+# WHERE a <=> b;
+#
+# -- ==================== 结束 ====================
+#BETWEEN条件的使用,SELECT 列名 FROM 表名 WHERE 限制列名 BETWEEN 下限 AND 上限
+USE lyt;
+SELECT demo.name FROM demo WHERE id BETWEEN 3 AND 15;
+INSERT INTO demo(id,name)  values(27,'wmf');
+#select is null / is not null 的用法
+SELECT demo.address FROM demo WHERE address is null;
+#使用逻辑条件 and or not where
+SELECT employee.name, salary FROM employee WHERE salary > 8000 AND name LIKE '%e%';
+#查询employees表中雇员薪水大于8000的并且名字中含有e的雇员名字与薪水。
+SELECT employee.name, salary FROM employee WHERE salary < 8000 OR name LIKE '%e%';
+#查询employees表中雇员薪水小于8000的或者名字中含有e的雇员名字与薪水。
+SELECT employee.name, salary FROM employee WHERE name NOT LIKE '%e%';
+#查询名字中不含有字母‘e’的员工姓名和薪水
+# ————————————————++++优先级++++——————————————————————
+#            () 括号 > NOT > AND > OR。
+# SELECT语句的执行顺序如下:
+# FROM子句
+# WHERE子句
+# SELECT子句
+# ORDERBY子句
+
+#ORDER BY 排序默认为升序，且排序必须写在查询语句的最后
+SELECT * FROM employee ORDER BY salary;
+#DESC为降序 ASC为升序
+SELECT * FROM employee ORDER BY age DESC ,salary ASC;
