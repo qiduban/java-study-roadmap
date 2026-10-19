@@ -39,8 +39,11 @@
 # SHOW CREATE TABLE girfirend;
 # SHOW KEYS FROM girfirend;
 #创建表时添加主键
+#注意：这个 demo 在第 97 行还会重建一次；IDEA 只按文件里第一处 CREATE 解析，两处列定义必须一致，否则后面所有 demo.name / demo.address 都会爆红
 CREATE TABLE demo(
-  id INT PRIMARY KEY
+  id INT PRIMARY KEY,
+  name VARCHAR(255),
+  address VARCHAR(255) DEFAULT 'Unknow'
 );
 #创建表时添加非空约束
 CREATE TABLE demo1(
@@ -276,3 +279,130 @@ SELECT employee.name, salary FROM employee WHERE name NOT LIKE '%e%';
 SELECT * FROM employee ORDER BY salary;
 #DESC为降序 ASC为升序
 SELECT * FROM employee ORDER BY age DESC ,salary ASC;
+SELECT age, COUNT(age) AS 人数 FROM employee WHERE salary > 20000 AND age <40 GROUP BY employee.age HAVING COUNT(salary) > 1;
+
+#-------------------------------------例题-----------------------------------------
+# 表: Person
+# +-------------+---------+
+# | Column Name | Type    |
+# +-------------+---------+
+# | id          | int     |
+# | email       | varchar |
+# +-------------+---------+
+# id 是该表的主键（具有唯一值的列）。
+# 此表的每一行都包含一封电子邮件。电子邮件不包含大写字母。
+# 编写解决方案来报告所有重复的电子邮件。 请注意，可以保证电子邮件字段不为 NULL。
+# 以 任意顺序 返回结果表。
+# 结果格式如下例。
+# 示例 1:
+# 输入:
+# Person 表:
+# +----+---------+
+# | id | email   |
+# +----+---------+
+# | 1  | a@b.com |
+# | 2  | c@d.com |
+# | 3  | a@b.com |
+# +----+---------+
+# 输出:
+# +---------+
+# | Email   |
+# +---------+
+# | a@b.com |
+# +---------+
+# 解释: a@b.com 出现了两次。
+# -------------------------------------------解答----------------------------------------------------
+#                                           SELECT email AS Email
+#                                           FROM Person
+#                                           GROUP BY email
+#                                           HAVING COUNT(*) > 1;
+#                                           为什么要分组：
+#                                           分组会把数据整合在一起不然数据会一条一条的蹦出来
+#                                           类似：
+#                                               email
+#                                               a@qq.com
+#                                               b@qq.com
+#                                               a@qq.com
+#                                               c@qq.com
+#                                               a@qq.com
+#                                               b@qq.com
+#字符函数：lower转换小写，upper 转化大写, LENGTH计算字符串长度 BINARY（关键字不是函数）区分大小写 CONCAT拼接字符串
+SELECT name,count(name) ,lower(name), LENGTH(name) AS '小写转换' FROM employee WHERE name like 'e%' GROUP BY name;
+SELECT name,count(name) ,upper(name), LENGTH(name) AS '小写转换' FROM employee WHERE name like 'e%' GROUP BY name;
+SELECT department,count(name)  AS '大写转换' FROM employee WHERE name like 'e%' GROUP BY department;
+SELECT employee.department, COUNT(employee.salary) FROM employee WHERE salary >25000 AND employee.age <40 GROUP BY employee.department;
+SELECT CONCAT('HELLO',' ','MySQL');
+SELECT CONCAT('I' , ' LOVE LYT');
+# LPAD(str, len, padstr)：在字符串 str 左侧用 padstr 填充，使结果达到 len 个字符；若 str 原长度大于 len，则截取其左侧前 len 个字符。
+# RPAD(str, len, padstr)：在字符串 str 右侧用 padstr 填充，使结果达到 len 个字符；若 str 原长度大于 len，则截取其左侧前 len 个字符。
+SELECT LPAD('LYT', 10, 'I LOVE ');
+SELECT RPAD('I LOVE ', 10, 'LYT');
+-- LTRIM(str)：去除字符串 str 左侧的普通空格，保留右侧及中间的空格；若 str 为 NULL，则返回 NULL。
+-- RTRIM(str)：去除字符串 str 右侧的普通空格，保留左侧及中间的空格；若 str 为 NULL，则返回 NULL。
+SELECT LTRIM('   hello   ');
+SELECT RTRIM('   hello   ');
+-- REPLACE(str, from_str, to_str)：将字符串 str 中所有匹配 from_str 的内容替换为 to_str；若任意参数为 NULL，则返回 NULL。
+SELECT REPLACE('banana', 'a', 'x');#例如，把字符串中的所有 'a' 替换成 'x'。
+-- REVERSE(str)：将字符串 str 中的字符顺序反转；若 str 为 NULL，则返回 NULL。
+SELECT REVERSE('hello');
+-- SUBSTR(str, pos, len) / SUBSTRING(str, pos, len)：从字符串 str 的第 pos 个字符开始截取 len 个字符（len 可省略，默认截取到末尾；pos 为负数时从右侧计数）；参数为 NULL 时返回 NULL。
+SELECT SUBSTR('abcdef', 2, 3);
+#ROUND()	四舍五入	ROUND(3.1415, 2) → 3.14,负数表示向小数点左侧移
+SELECT ROUND(3.1415, 2) AS '约分结果' ;
+SELECT ROUND(3.1415, -1) AS '约分结果' ;
+#TRUNCATE()	截断小数，不四舍五入
+SELECT TRUNCATE(3.149, 2);
+#MOD()	求余数
+SELECT MOD(10, 3);
+# CEIL() 向上取整，返回大于或等于该数的最小整数
+SELECT CEIL(3.2) AS '向上取整结果';   # 4
+SELECT CEIL(-3.2) AS '向上取整结果';  # -3
+# FLOOR() 向下取整，返回小于或等于该数的最大整数
+SELECT FLOOR(3.8) AS '向下取整结果';   # 3
+SELECT FLOOR(-3.2) AS '向下取整结果';  # -4
+# ABS() 求绝对值
+SELECT ABS(-10) AS '绝对值结果';       # 10
+SELECT ABS(3.14) AS '绝对值结果';      # 3.14
+# RAND() 生成 0（包含）到 1（不包含）之间的随机数
+SELECT RAND() AS '随机数结果';
+# RAND(N) 使用指定种子生成可重复的伪随机数
+SELECT RAND(10) AS '随机数结果';
+# POW() 计算一个数的指定次幂
+SELECT POW(2, 3) AS '幂运算结果';      # 8
+SELECT POW(5, 2) AS '幂运算结果';      # 25
+# SQRT() 求平方根，负数会返回 NULL
+SELECT SQRT(25) AS '平方根结果';       # 5
+SELECT SQRT(81) AS '平方根结果';       # 9
+SELECT SQRT(-4) AS '平方根结果';       # NULL
+# SIGN() 判断数字的正负：正数返回 1，负数返回 -1，零返回 0
+SELECT SIGN(10) AS '符号结果';         # 1
+SELECT SIGN(-10) AS '符号结果';        # -1
+SELECT SIGN(0) AS '符号结果';          # 0
+# PI() 返回圆周率 π
+SELECT PI() AS '圆周率';               # 约 3.141593
+# MOD() 求余数
+SELECT MOD(10, 3) AS '求余结果';       # 1
+SELECT MOD(10, 2) AS '求余结果';       # 0
+# GREATEST() 返回参数中的最大值
+SELECT GREATEST(10, 20, 5, 30) AS '最大值';  # 30
+# LEAST() 返回参数中的最小值
+SELECT LEAST(10, 20, 5, 30) AS '最小值';     # 5
+
+# --------------------------------------------日期函数--------------------------------------------------------------
+# 在MySQL中允许直接使用字符串表示日期，但是要求字符串的日期格式必须为:YYYY-MM-DD HH:MI:SS' 或者YYYY/MM/DD HH:MI:SS';
+# CURDATE() 获取当前日期
+SELECT CURDATE() AS '当前日期';
+# 示例结果：2026-10-19
+# CURRENT_DATE() 与 CURDATE() 作用相同
+SELECT CURRENT_DATE() AS '当前日期';
+#获取当前时间 CURTIME/CURRENT_TIME功能一样只是名字不一样
+SELECT CURRENT_TIME() AS '当前时间';
+SELECT CURTIME() AS '当前时间';
+# DATE（） 从日期或日期时间表达式中提取日期值
+SELECT DATE('2005-1-8') AS '老婆的生日';
+#NOW() 获取当前时间
+SELECT NOW() AS '当前时间';
+DESC employee;
+ALTER TABLE employee ADD COLUMN cretime DATETIME;
+INSERT INTO employee VALUES (155,'v','v','v','dp1','123452','45','2077-1-1');
+SELECT * FROM lyt.employee where name LIKE 'V%';
