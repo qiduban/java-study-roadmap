@@ -406,3 +406,144 @@ DESC employee;
 ALTER TABLE employee ADD COLUMN cretime DATETIME;
 INSERT INTO employee VALUES (155,'v','v','v','dp1','123452','45','2077-1-1');
 SELECT * FROM lyt.employee where name LIKE 'V%';
+#STR_TO_DATE将字符串类型转化成datetime类型
+INSERT INTO employee VALUES (156,'王梦燊','梦燊','王','dp1','120000','19',STR_TO_DATE('2007年4月25日','%Y年%m月%d日'));
+SELECT employee.cretime FROM employee WHERE name = '王梦燊';
+# ==================== 年份、月份、日期 ====================
+
+# %Y  四位年份，例如 2026
+# %y  两位年份，例如 26
+
+# %M  月份英文全名，例如 October
+# %b  月份英文缩写，例如 Oct
+# %m  月份，补零，范围 01-12
+# %c  月份，不补零，范围 1-12
+
+# %D  带英文序数后缀的日期，例如 25th
+# %d  日期，补零，范围 01-31
+# %e  日期，不补零，范围 1-31
+# %j  一年中的第几天，范围 001-366
+
+
+# ==================== 小时、分钟、秒 ====================
+
+# %H  24小时制小时，范围 00-23
+# %k  24小时制小时，不补零，范围 0-23
+
+# %h  12小时制小时，范围 01-12
+# %I  12小时制小时，范围 01-12
+# %l  12小时制小时，不补零，范围 1-12
+
+# %i  分钟，范围 00-59
+# %s  秒，范围 00-59
+# %S  秒，范围 00-59
+# %f  微秒，六位数字
+
+# %p  上午或下午，例如 AM、PM
+# %r  12小时制时间，例如 02:30:25 PM
+# %T  24小时制时间，例如 14:30:25
+
+
+# ==================== 星期、周数 ====================
+
+# %W  星期英文全名，例如 Monday
+# %a  星期英文缩写，例如 Mon
+# %w  星期数字，星期日为0，星期六为6
+
+# %U  周数，星期日为一周第一天，范围 00-53
+# %u  周数，星期一为一周第一天，范围 00-53
+
+# %V  周数，星期日为一周第一天，范围 01-53
+# %X  与%V配套的四位周所属年份
+
+# %v  周数，星期一为一周第一天，范围 01-53
+# %x  与%v配套的四位周所属年份
+
+
+# ==================== 其他 ====================
+
+# %%  输出一个百分号 %
+
+#==================== 例子 ====================
+# DATE_FORMAT() 将日期格式化为字符串
+SELECT DATE_FORMAT(
+               '2026-10-19 14:30:25',
+               '%Y-%m-%d %H:%i:%s'
+       ) AS '格式化日期';
+# 结果：2026-10-19 14:30:25
+# 显示中文日期
+SELECT DATE_FORMAT(
+               '2026-10-19',
+               '%Y年%m月%d日'
+       ) AS '中文日期';
+# 结果：2026年10月19日
+# 显示星期英文名称
+SELECT DATE_FORMAT(
+               '2026-10-19',
+               '%W'
+       ) AS '星期';
+# 结果：Monday
+# 显示12小时制时间及上午、下午
+SELECT DATE_FORMAT(
+               '2026-10-19 14:30:25',
+               '%r'
+       ) AS '时间';
+# 结果：02:30:25 PM
+# CAST() 将值转换为指定的数据类型
+SELECT CAST('123' AS SIGNED) AS '转换结果';       # 123
+SELECT CAST('3.1415' AS DECIMAL(10,2)) AS '转换结果'; # 3.14
+SELECT CAST(123 AS CHAR) AS '转换结果';            # '123'
+SELECT CAST('2026-10-20' AS DATE) AS '转换日期';   # 2026-10-20
+
+# CONVERT() 将值转换为指定的数据类型
+SELECT CONVERT('123', SIGNED) AS '转换结果';       # 123
+SELECT CONVERT(123, CHAR) AS '转换结果';            # '123'
+
+# DATE_FORMAT() 将日期转换为指定格式的字符串
+SELECT DATE_FORMAT('2026-10-20', '%Y-%m-%d') AS '日期';
+SELECT DATE_FORMAT('2026-10-20', '%Y年%m月%d日') AS '日期';
+
+# STR_TO_DATE() 将字符串按照指定格式解析为日期
+SELECT STR_TO_DATE('2026-10-20', '%Y-%m-%d') AS '日期';
+SELECT STR_TO_DATE('20/10/2026', '%d/%m/%Y') AS '日期';
+
+# 隐式类型转换：MySQL 自动进行类型转换
+SELECT '123' + 10 AS '计算结果';                  # 133
+SELECT 10 = '10' AS '比较结果';# 1
+# ================================================= 通用函数 ======================================================
+# IF(条件, 条件成立时的值, 条件不成立时的值)
+SELECT IF(1 > 0, '正确', '错误') AS '判断结果';
+SELECT IF(salary > 10000, 'H', 'L'), COUNT(*) AS '工资等级' FROM employee GROUP BY IF(salary > 10000, 'H', 'L');
+# IFNULL(值1, 备用值)判断是否为空为空则用备用值替换
+SELECT IFNULL(NULL, 'Hello World');
+-- Hello World
+SELECT IFNULL(100, 0);
+-- 100
+# ISNULL()：判断是否为空
+SELECT ISNULL(NULL);  -- 1
+SELECT ISNULL(100);   -- 0
+# NULLIF()：相等就返回 NULL 记忆：两个值一样，变成空值；不一样，返回第一个值
+SELECT NULLIF(25, 25);  -- NULL
+SELECT NULLIF(25, 30);  -- 25
+# 实际应用中，可以用它避免分母为 0 的除法问题：
+# SELECT profit / NULLIF(revenue, 0)
+# FROM sales;
+# COALESCE()：从左向右寻找第一个非 NULL 值,可以提供多个候选值。如果全部都是 NULL，结果就是 NULL。
+SELECT COALESCE(NULL, NULL, 'bjxt.com', 'google.com');
+-- bjxt.com
+# CASE WHEN：多条件分支判断类似Java中的switch
+# CASE
+#     WHEN 条件1 THEN 结果1
+#     WHEN 条件2 THEN 结果2
+#     ELSE 默认结果
+# END
+SELECT CASE
+WHEN employee.age >= 50 THEN 'GZL'
+    WHEN age < 50 THEN 'NZL'
+                 END
+    ,COUNT(*)
+FROM employee GROUP BY CASE
+    WHEN employee.age >= 50 THEN 'GZL'
+    WHEN age < 50 THEN 'NZL'
+    END;
+SELECT last_name, commission , (salary + salary * 12 *IFNULL(commission,0)) AN FROM employee
