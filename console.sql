@@ -546,4 +546,47 @@ FROM employee GROUP BY CASE
     WHEN employee.age >= 50 THEN 'GZL'
     WHEN age < 50 THEN 'NZL'
     END;
-SELECT last_name, commission , (salary + salary * 12 *IFNULL(commission,0)) AN FROM employee
+SELECT last_name, commission , (salary + salary * 12 *IFNULL(commission,0)) AN FROM employee;
+SELECT employee.first_name,
+       last_name,
+       LENGTH(employee.first_name) 'EXP1',
+       LENGTH(last_name) 'EXP2',
+       NULLIF(LENGTH(first_name),LENGTH(last_name))
+FROM employee;
+# 例题 1:
+# 查询员工表，显示他们的名字，如果COMMISSION_PCT值是非空，显示它。
+# 如果COMMISSION PCT值是空，则显示SALARY。
+# 如果COMMISSION PCT和SALARY值都是空，那么显示10。
+# 在结果中对佣金列升序排序。
+SELECT employee.name , COALESCE(employee.commission, employee.salary, 10)
+FROM employee
+ORDER BY
+    commission;
+# 例题 2:
+# 查询员工表，如果JOB_ID是IT_PROG，薪水增加10%;
+# 如果JOB_ID是ST_CLERK，薪水增加15%;
+# 如果JOB_ID是SA_REP，薪水增加20%。对于所有其他的工作角色，不增加薪水
+DESC employee;
+SELECT employee.name, employee.department, employee.salary,
+       CASE department
+           WHEN 'IT_PROG' THEN salary * 1.10
+           WHEN 'ST_CLERK' THEN  salary * 1.13
+           WHEN 'SA_REP' THEN salary * 1.20
+           ELSE salary
+END AS 'RETINE_SALARY'
+           FROM employee;
+SELECT employee.cretime, employee.department, employee.name
+FROM employee
+WHERE cretime BETWEEN '1998-1-1' AND '2026-1-1'
+ORDER BY cretime ASC;
+SELECT employee.last_namE, LENGTH(employee.name) FROM employee WHERE
+                                                              last_name LIKE 'J%'
+OR
+                                                              last_name LIKE 'A%'
+OR
+                                                              last_name LIKE 'M%'
+ORDER BY LENGTH(last_name) ASC;
+# 笛卡尔乘积:
+# 当一个连接条件无效或被遗漏时，其结果是一个笛卡尔乘积(Cartesianproduct)，
+# 其中所有行的组合都被显示。第一个表中的所有行连接到第二个表中的所有行。一个笛卡尔乘积会产生大量的行，其结果没有什么用。
+# 你应该在WHERE子句中始终包含一个有效的连接条件除非你有特殊的需求，需要从所有表中组合所有的行。
