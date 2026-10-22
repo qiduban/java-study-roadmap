@@ -590,3 +590,48 @@ ORDER BY LENGTH(last_name) ASC;
 # 当一个连接条件无效或被遗漏时，其结果是一个笛卡尔乘积(Cartesianproduct)，
 # 其中所有行的组合都被显示。第一个表中的所有行连接到第二个表中的所有行。一个笛卡尔乘积会产生大量的行，其结果没有什么用。
 # 你应该在WHERE子句中始终包含一个有效的连接条件除非你有特殊的需求，需要从所有表中组合所有的行。
+# =========================================内连接与外连接==============================================
+-- 内连接（INNER JOIN）：只返回两张表中满足关联条件的记录，不匹配的数据会被过滤掉。
+-- 左外连接（LEFT JOIN）：保留左表的所有记录，右表匹配不到时，右表字段为 NULL。
+-- 右外连接（RIGHT JOIN）：保留右表的所有记录，左表匹配不到时，左表字段为 NULL。
+-- 全外连接（FULL OUTER JOIN）：保留左右两张表的所有记录，匹配不到的字段用 NULL 填充。
+-- 注意：MySQL 不直接支持 FULL OUTER JOIN，可通过 LEFT JOIN、RIGHT JOIN 和 UNION 等方式实现类似效果。
+# ====================================等值连接========================================
+#1.显示写法
+SELECT name, salary, employee.dept_id, department.dept_name
+FROM employee
+         JOIN department
+              ON employee.dept_id = department.dept_id
+WHERE department.dept_id = 4;
+#2.隐式写法
+SELECT employee.name, department.dept_name
+FROM department, employee
+WHERE employee.dept_id = department.dept_id
+AND department.dept_id = 4;
+# ==================================== 非等值连接 ==================================================
+# 隐式写法
+SELECT employee.name, employee.salary, salary_grade.grade_name
+FROM employee, salary_grade
+WHERE salary
+BETWEEN min_salary AND max_salary;
+# 显式写法
+SELECT employee.name, employee.salary, salary_grade.grade_name
+FROM employee
+JOIN salary_grade
+ON salary BETWEEN min_salary AND max_salary
+ORDER BY employee.salary ASC ;
+
+# ===================================== 自连接 =================================================
+# 显示连接
+SELECT e.id, e.name, e.salary, d.dept_name, d.dept_id, m.name
+FROM employee e
+join employee m
+ON e.manager_id = m.id
+JOIN lyt.department d on d.dept_id = e.dept_id
+ORDER BY e.manager_id DESC;
+# 隐式连接
+SELECT e.id, e.name,e.salary, d.dept_name, d.dept_id, m.name
+FROM employee e, employee m,department d
+WHERE e.manager_id = m.id AND e.dept_id = d.dept_id
+AND m.name = '王梦燊'
+ORDER BY e.manager_id DESC
