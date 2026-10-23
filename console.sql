@@ -634,4 +634,71 @@ SELECT e.id, e.name,e.salary, d.dept_name, d.dept_id, m.name
 FROM employee e, employee m,department d
 WHERE e.manager_id = m.id AND e.dept_id = d.dept_id
 AND m.name = '王梦燊'
-ORDER BY e.manager_id DESC
+ORDER BY e.manager_id DESC;
+# =====================================交叉连接=============================================
+#显示写法
+SELECT *
+FROM employee
+CROSS JOIN department;
+#隐式写法
+SELECT *
+FROM department ,employee;
+# 交叉连接是多表查询中的一种连接方式。它和你之前学习的等值连接、自连接不同，最核心的特点是：
+# 交叉连接会将一张表中的每一行，与另一张表中的每一行进行组合，生成所有可能的组合结果。
+# 这种结果也叫作笛卡尔乘积。
+# =====================================自然连接==============================
+#显式写法
+SELECT employee.name, department.dept_name, IF(salary > 20000 ,'G' , 'D') AS 'LEVEL'
+FROM employee
+NATURAL JOIN lyt.department;
+# 重要注意事项：
+# 自然连接不需要手动写 ON。
+# 所有同名字段都会参与连接条件，不只是其中一个。
+# 使用 SELECT * 时，共同的连接字段只显示一次。
+# 如果两张表中有多个同名字段，可能导致意外的匹配结果。
+# 如果表中没有同名字段，通常会形成所有可能的行组合。
+# ====================================================内连接====================================================
+SELECT e.name AS '员工名',
+       e.salary AS '员工薪水',
+       d1.dept_name AS '员工部门',
+       m.name AS '领导名',
+       m.salary AS '领导薪水',
+       d2.dept_name AS '领导部门'
+FROM employee e
+JOIN employee m
+ON e.manager_id = m.id
+JOIN department d1
+    on e.dept_id =  d1.dept_id
+JOIN department d2
+    on m.dept_id =  d2.dept_id ;
+# ====================================================外连接====================================================
+# 外连接与内连接的关键区别是：即使指定一侧的记录没有匹配成功，也会将这条记录保留下来。
+-- 左外连接（LEFT JOIN）：保留左表的所有记录，右表匹配不到时，右表字段为 NULL。
+-- 右外连接（RIGHT JOIN）：保留右表的所有记录，左表匹配不到时，左表字段为 NULL。
+SELECT e.name, d.dept_name
+FROM employee e
+LEFT JOIN lyt.department d on d.dept_id = e.dept_id;
+# ++++++++左外连接++++++++++
+# Michael Brown, null
+# Sarah Chen, null
+# David Kim, null
+# Emma Wilson, null
+# +++++++++右外连接+++++++++
+SELECT e.name, d.dept_name
+FROM employee e
+         RIGHT JOIN lyt.department d on d.dept_id = e.dept_id;
+# NULL,Quality Assurance Engineer
+# +++++++++全外连接+++++++++
+SELECT e.name, d.dept_name
+FROM employee e
+         LEFT JOIN lyt.department d on d.dept_id = e.dept_id
+union
+SELECT e.name, d.dept_name
+FROM employee e
+         RIGHT JOIN lyt.department d on d.dept_id = e.dept_id;
+# Michael Brown, null
+# Sarah Chen, null
+# David Kim, null
+# Emma Wilson, null
+# NULL,Quality Assurance Engineer
+# 将所有含有孤儿数据的数据全列出来
