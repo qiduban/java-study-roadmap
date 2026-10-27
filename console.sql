@@ -691,8 +691,7 @@ FROM employee e
 # +++++++++全外连接+++++++++
 SELECT e.name, d.dept_name
 FROM employee e
-         LEFT JOIN lyt.department d on d.dept_id = e.dept_id
-union
+         LEFT JOIN lyt.department d on d.dept_id = e.dept_id;
 SELECT e.name, d.dept_name
 FROM employee e
          RIGHT JOIN lyt.department d on d.dept_id = e.dept_id;
@@ -702,3 +701,150 @@ FROM employee e
 # Emma Wilson, null
 # NULL,Quality Assurance Engineer
 # 将所有含有孤儿数据的数据全列出来
+# -------------------------------------聚合函数----------------------------------
+-- 1. COUNT()：统计数量
+SELECT COUNT(*) FROM employee;
+-- 统计员工总人数
+
+SELECT COUNT(salary) FROM employee;
+-- 统计 salary 字段不为 NULL 的员工人数
+
+SELECT COUNT(DISTINCT department) FROM employee;
+-- 统计不重复的部门数量
+
+
+-- 2. SUM()：求和
+SELECT SUM(salary) FROM employee;
+-- 计算所有员工的工资总和
+
+
+-- 3. AVG()：求平均值
+SELECT AVG(salary) FROM employee;
+-- 计算所有员工的平均工资（忽略 NULL）
+
+
+-- 4. MAX()：求最大值
+SELECT MAX(salary) FROM employee;
+-- 查询最高工资
+
+
+-- 5. MIN()：求最小值
+SELECT MIN(salary) FROM employee;
+-- 查询最低工资
+
+
+-- 6. GROUP BY：分组统计（常与聚合函数一起使用）
+SELECT department, COUNT(*)
+FROM employee
+GROUP BY department;
+-- 按部门分组，统计每个部门的员工人数
+
+
+-- 7. WHERE：分组前过滤数据
+SELECT department, AVG(salary)
+FROM employee
+WHERE salary > 7000
+GROUP BY department;
+-- 先筛选工资大于 7000 的员工，再按部门计算平均工资
+
+
+-- 8. HAVING：分组后过滤结果
+SELECT department, AVG(salary) AS avg_salary
+FROM employee
+GROUP BY department
+HAVING AVG(salary) > 8000;
+-- 查询平均工资大于 8000 的部门
+# ----------------例子-----------------------
+SELECT d.dept_name '部门名称',
+       m.name '领导名字',
+       AVG(e.salary) '平均值'
+FROM employee e
+JOIN lyt.department d on d.dept_id = e.dept_id
+JOIN employee m ON E.manager_id = m.id
+GROUP BY d.dept_name, m.name
+order by avg(salary) desc ;
+
+SELECT d.dept_name,
+       employee.department,
+       count(id),
+       AVG(salary)
+from employee
+join lyt.department d on d.dept_id = employee.dept_id
+group by d.dept_name, employee.department
+HAVING AVG(salary) > 20000;
+#用WHERE子句约束选择的行，用HAVING子句约束组,若未分组则不可以使用having
+
+SELECT d.dept_name,
+       SUM(employee.salary)
+FROM employee
+JOIN lyt.department d on d.dept_id = employee.dept_id
+WHERE department NOT LIKE '%REP%'
+GROUP BY d.dept_name
+HAVING SUM(salary) > 350000
+ORDER BY SUM(employee.salary);
+
+# ==============================================子查询======================================================
+
+#1.标量子查询
+-- 查询工资高于公司平均工资的员工
+SELECT d.dept_name,
+       employee.name,
+       employee.salary
+FROM employee
+JOIN lyt.department d on d.dept_id = employee.dept_id
+WHERE employee.salary >(
+        SELECT AVG(salary)
+        FROM employee
+    )
+ORDER BY salary DESC ;
+SELECT AVG(employee.salary) FROM employee;
+
+#2.IN 子查询：判断是否在结果集合中
+-- 查询工资超过 10000 的员工所在的部门
+ SELECT *
+ FROM department
+ JOIN lyt.employee e on department.dept_id = e.dept_id
+ WHERE department.dept_id IN (
+     SELECT employee.id
+     FROM employee
+     WHERE salary > 10000
+     );
+-- 查询工资不超过 10000 的员工所在的部门
+SELECT *
+FROM department
+         JOIN lyt.employee e on department.dept_id = e.dept_id
+WHERE department.dept_id NOT IN (
+    SELECT employee.id
+    FROM employee
+    WHERE salary > 10000
+);
+#3.EXISTS 子查询
+# EXISTS 用于判断子查询是否存在符合条件的记录。
+# - 存在记录：EXISTS 为真。
+# - 不存在记录：EXISTS 为假。
+# 它关注的不是子查询返回什么值，而是有没有符合条件的记录。
+-- 查询没有下单的客户
+SELECT name AS Customers FROM Customers
+where NOT EXISTS (SELECT 1
+                  FROM Orders O
+                  WHERE O.customerId = Customers.id
+);
+-- 查询有下单的客户
+SELECT name AS Customers FROM Customers
+where  EXISTS (SELECT 1
+                  FROM Orders O
+                  WHERE O.customerId = Customers.id
+);
+# 4.FROM 子查询：把查询结果当作临时表
+# FROM 后面的括号中写的是一个查询。MySQL 会将这个查询的结果作为外层查询的数据来源。
+# 这种由 FROM 子查询产生的结果，叫作派生表（Derived Table）。
+# 你可以暂时把它理解为一张临时的查询结果表。
+# 注意：它不是通过 CREATE TABLE 创建的永久表，也不是自动保存在数据库中的新表；它只是在当前 SQL 查询中使用。
+
+-- 筛选平均工资大于 8000 的部门
+SELECT * FROM (SELECT d.dept_name,
+                      avg(employee.salary) avg_salary
+               FROM employee
+                        JOIN lyt.department d on d.dept_id = employee.dept_id
+               GROUP BY dept_name) t -- 派生表名不要忘
+WHERE t.avg_salary>20000;
