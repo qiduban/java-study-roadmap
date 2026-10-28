@@ -403,11 +403,18 @@ SELECT DATE('2005-1-8') AS '老婆的生日';
 #NOW() 获取当前时间
 SELECT NOW() AS '当前时间';
 DESC employee;
-ALTER TABLE employee ADD COLUMN cretime DATETIME;
-INSERT INTO employee VALUES (155,'v','v','v','dp1','123452','45','2077-1-1');
+-- 注意：cretime 列后来已经加到 employee 表里了，重复执行会报 Duplicate column，故注释保留
+-- ALTER TABLE employee ADD COLUMN cretime DATETIME;
+-- 注意：employee 表后来新增了 dept_id、manager_id、commission 列，早期 8 列的 INSERT 已不匹配；
+-- 这里按当前 11 列改写，并用 INSERT IGNORE 避免 id=155 已存在时主键冲突
+INSERT IGNORE INTO employee
+    (id, name, first_name, last_name, department, dept_id, manager_id, salary, commission, age, cretime)
+VALUES (155, 'v', 'v', 'v', 'SA_REP', 3, NULL, 123452.00, NULL, 45, '2077-01-01 00:00:00');
 SELECT * FROM lyt.employee where name LIKE 'V%';
 #STR_TO_DATE将字符串类型转化成datetime类型
-INSERT INTO employee VALUES (156,'王梦燊','梦燊','王','dp1','120000','19',STR_TO_DATE('2007年4月25日','%Y年%m月%d日'));
+INSERT IGNORE INTO employee
+    (id, name, first_name, last_name, department, dept_id, manager_id, salary, commission, age, cretime)
+VALUES (156, '王梦燊', '梦燊', '王', 'AD_VP', 4, NULL, 120000.00, NULL, 19, STR_TO_DATE('2007年4月25日','%Y年%m月%d日'));
 SELECT employee.cretime FROM employee WHERE name = '王梦燊';
 # ==================== 年份、月份、日期 ====================
 
@@ -818,6 +825,79 @@ WHERE department.dept_id NOT IN (
     FROM employee
     WHERE salary > 10000
 );
+-- ============================================
+-- ANY 和 ALL：多行子查询比较符的记忆方法
+-- ============================================
+
+-- ANY：任意一个
+-- 只要与子查询返回的任意一个值比较成立，就满足条件。
+-- 记忆：满足一个就可以（OR 的思路）。
+--
+-- ALL：所有
+-- 必须与子查询返回的所有值比较都成立，才满足条件。
+-- 记忆：所有都要满足（AND 的思路）。
+
+
+-- 假设子查询返回两个工资：
+-- 60000、90000
+
+
+-- ============================================
+-- 一、ANY：任意一个成立即可
+-- ============================================
+
+-- 1. 大于任意一个值
+-- salary > 60000 OR salary > 90000
+-- 对于非空且不含 NULL 的结果，相当于大于最小值
+-- WHERE salary > ANY (子查询);
+
+-- 2. 小于任意一个值
+-- salary < 60000 OR salary < 90000
+-- 对于非空且不含 NULL 的结果，相当于小于最大值
+-- WHERE salary < ANY (子查询);
+
+-- 3. 等于任意一个值
+-- salary = 60000 OR salary = 90000
+-- 常见情况下等价于 IN
+-- WHERE salary = ANY (子查询);
+
+
+-- ============================================
+-- 二、ALL：所有条件都要成立
+-- ============================================
+
+-- 1. 大于所有值
+-- salary > 60000 AND salary > 90000
+-- 对于非空且不含 NULL 的结果，相当于大于最大值
+-- WHERE salary > ALL (子查询);
+
+-- 2. 小于所有值
+-- salary < 60000 AND salary < 90000
+-- 对于非空且不含 NULL 的结果，相当于小于最小值
+-- WHERE salary < ALL (子查询);
+
+-- 3. 不等于所有值
+-- salary <> 60000 AND salary <> 90000
+-- 即不能等于其中任何一个值
+-- 常见情况下等价于 NOT IN（需注意 NULL）
+-- WHERE salary <> ALL (子查询);
+
+
+-- ============================================
+-- 三、核心记忆口诀
+-- ============================================
+
+-- ANY = 任意一个：满足一个即可，记住 OR。
+-- ALL = 所有：每一个都要满足，记住 AND。
+
+-- > ANY：大于最小值即可（非空且不含 NULL）。
+-- > ALL：必须大于最大值（非空且不含 NULL）。
+-- < ANY：小于最大值即可（非空且不含 NULL）。
+-- < ALL：必须小于最小值（非空且不含 NULL）。
+
+-- 注意：
+-- 上面的最小值、最大值简化规则，要求子查询结果非空且不含 NULL。
+-- 如果结果包含 NULL 或者为空，比较结果需要单独分析。
 #3.EXISTS 子查询
 # EXISTS 用于判断子查询是否存在符合条件的记录。
 # - 存在记录：EXISTS 为真。
@@ -847,4 +927,194 @@ SELECT * FROM (SELECT d.dept_name,
                FROM employee
                         JOIN lyt.department d on d.dept_id = employee.dept_id
                GROUP BY dept_name) t -- 派生表名不要忘
-WHERE t.avg_salary>20000;
+WHERE t.avg_salary>10000;
+#==============================================窗口函数================================================================
+-- ============================================
+-- 一、窗口函数：Window Function
+-- ============================================
+
+-- 窗口函数可以对一组相关记录进行计算，
+-- 同时保留每一行原始数据。
+-- 常见用途：排名、累计求和、计算平均值等。
+
+-- 基本语法：
+-- 函数名() OVER (
+--     PARTITION BY 分组字段
+--     ORDER BY 排序字段
+-- );
+
+
+-- ============================================
+-- 二、DENSE_RANK()：密集排名函数
+-- ============================================
+
+-- DENSE_RANK() 用于排名。
+-- 相同的工资获得相同的排名，
+-- 后续排名不会跳号。
+--
+-- 例如工资：90000、85000、85000、70000
+-- 对应排名：1、2、2、3
+--
+-- 本题要求按照不同工资排名前三，
+-- 因此适合使用 DENSE_RANK()。
+
+SELECT id, name, salary,
+       DENSE_RANK() OVER (ORDER BY salary DESC) AS salary_rank
+FROM employee;
+
+-- ORDER BY salary DESC：
+-- 按工资从高到低排序。
+--
+-- AS salary_rank：
+-- 给计算出来的排名列设置别名 salary_rank。
+
+
+-- ============================================
+-- 三、OVER()：指定窗口函数的计算规则
+-- ============================================
+
+-- OVER() 用于指定窗口函数的计算范围和规则。
+--
+-- 例如：
+-- DENSE_RANK() OVER (ORDER BY salary DESC)
+--
+-- 表示按照工资从高到低进行密集排名。
+--
+-- 窗口函数不会像 GROUP BY 那样
+-- 将同组的多条员工记录合并成一条。
+
+
+-- ============================================
+-- 四、PARTITION BY：划分窗口
+-- ============================================
+
+-- PARTITION BY dept_id：
+-- 按部门编号划分窗口。
+--
+-- 每个部门独立排名，排名从 1 开始。
+--
+-- 例如：
+-- IT_PROG 部门的最高工资是第 1 名；
+-- SA_REP 部门的最高工资也会是第 1 名。
+--
+-- 注意：
+-- PARTITION BY 用于窗口计算；
+-- GROUP BY 主要用于分组统计。
+
+SELECT id, name, dept_id, salary,
+       DENSE_RANK() OVER (
+           PARTITION BY dept_id
+           ORDER BY salary DESC
+       ) AS salary_rank
+FROM employee;
+
+
+-- ============================================
+-- 五、JOIN：连接员工表和部门表
+-- ============================================
+
+-- employee 表存储员工的姓名、工资和部门编号(dept_id)。
+-- department 表存储部门编号(dept_id)和部门名称(dept_name)。
+--
+-- 两张表通过 employee.dept_id
+-- 与 department.dept_id 对应关联。
+--
+-- JOIN 默认是 INNER JOIN，
+-- 只返回两张表中能够匹配的记录。
+
+SELECT
+    e.name,
+    e.salary,
+    d.dept_name AS Department
+FROM employee AS e
+         JOIN department AS d
+              ON e.dept_id = d.dept_id;
+
+
+-- ============================================
+-- 六、FROM 子查询：将查询结果作为派生表
+-- ============================================
+
+-- FROM (SELECT ...) AS t
+--
+-- 1. 内层查询先计算排名。
+-- 2. 将内层查询的结果作为派生表。
+-- 3. AS t 给派生表设置别名 t。
+-- 4. 外层查询可以继续筛选派生表中的字段。
+--
+-- 注意：
+-- 派生表不是永久创建的新表。
+-- 外层只能访问内层 SELECT 输出的字段。
+
+
+-- ============================================
+-- 七、WHERE：筛选排名前三的员工
+-- ============================================
+
+-- WHERE salary_rank <= 3：
+-- 只保留排名为 1、2、3 的员工。
+--
+-- 为什么放在外层？
+-- 因为同一层的 WHERE 不能直接使用窗口函数
+-- 的计算结果进行筛选。
+--
+-- 所以先在内层计算排名，
+-- 再在外层通过 WHERE 筛选。
+
+
+-- ============================================
+-- 八、完整解法：LeetCode 第 185 题
+-- ============================================
+
+SELECT
+    t.Department,            -- 返回部门名称
+    t.Employee,              -- 返回员工姓名
+    t.Salary                 -- 返回员工工资
+FROM (
+         -- 内层查询：计算每名员工在本部门的工资排名
+         SELECT
+             d.dept_name AS Department,  -- 获取部门名称
+             e.name AS Employee,    -- 获取员工姓名
+             e.salary AS Salary,    -- 获取员工工资
+
+             -- DENSE_RANK()：密集排名
+             -- PARTITION BY：每个部门单独排名
+             -- ORDER BY salary DESC：工资从高到低排名
+             DENSE_RANK() OVER (
+                 PARTITION BY e.dept_id
+                 ORDER BY e.salary DESC
+                 ) AS salary_rank       -- 保存排名结果
+
+         FROM employee AS e
+
+                  -- 连接部门表，获取部门名称
+                  JOIN department AS d
+                       ON e.dept_id = d.dept_id
+
+     ) AS t                          -- 给内层查询结果起别名 t
+
+-- 外层查询：筛选每个部门工资排名前三的员工
+WHERE t.salary_rank <= 3;
+
+# ++++++++++++++++++++++++++++++++++++++++++++++++++++++++索引++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++
+# 1.普通索引
+# 普通索引就是为表中的一个或多个字段建立的、没有唯一性约束的索引。
+# 它主要用于加快查询速度，不要求索引中的值必须唯一
+CREATE INDEX idx_name ON employee(name);
+#创建姓名索引 idx_name 为索引名每一个索引都需要一个名字
+ALTER TABLE employee
+    ADD INDEX idx_name (name);
+#这也是添加索引的一种方式和上面是同一个效果
+SHOW INDEX FROM employee;
+#作用是展现已经创建的索引
+SELECT * FROM employee
+WHERE name = '张三';
+#使用索引，查询效率更高
+EXPLAIN
+SELECT * FROM employee
+WHERE name = '张三';
+#EXPLAN查看是否使用了索引
+# 假如执行计划中显示：
+# possible_keys: idx_name
+# key:           idx_name
+# 代表MySQL选择了索引查询
