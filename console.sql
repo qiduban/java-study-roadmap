@@ -1100,6 +1100,45 @@ WHERE t.salary_rank <= 3;
 # 1.普通索引
 # 普通索引就是为表中的一个或多个字段建立的、没有唯一性约束的索引。
 # 它主要用于加快查询速度，不要求索引中的值必须唯一
+# 创建索引的格式
+# CREATE INDEX index_name ON table(column(length));
+/*
+普通索引中的 length：前缀索引长度
+
+1. 含义：
+   length 表示索引字符串字段的前多少个字符或字节，
+   不是字段长度限制，也不是 B+ 树的高度。
+
+2. 创建方式：
+   CREATE INDEX idx_name ON user(name(10));
+   表示只对 name 的前 10 个字符建立索引。
+
+3. 适用类型：
+   - CHAR、VARCHAR：按字符计算。
+   - BINARY、VARBINARY、BLOB：按字节计算。
+   - TEXT、BLOB 类型建立索引时，通常需要指定前缀长度。
+   - INT 等数值类型不能使用这种前缀索引写法。
+
+4. 优点：
+   减少索引占用的存储空间，降低索引维护成本。
+
+5. 缺点：
+   前缀越短，不同值的前缀越容易重复，可能增加需要检查的记录数，
+   查询效率不一定优于完整索引。
+
+6. 注意：
+   - length 不能超过字段及数据库允许的索引长度限制。
+   - 唯一前缀索引只保证前缀不重复，不保证完整字段值不重复。
+   - SHOW INDEX FROM user; 可查看索引信息，
+     其中 Sub_part 通常表示前缀长度。
+
+示例：
+   CREATE INDEX idx_name ON user(name(10));
+   CREATE UNIQUE INDEX uk_name ON user(name(10));
+
+适用场景：
+   字符串较长、前缀具有较好区分度，并且希望减少索引空间时。
+*/
 CREATE INDEX idx_name ON employee(name);
 #创建姓名索引 idx_name 为索引名每一个索引都需要一个名字
 ALTER TABLE employee
@@ -1118,3 +1157,34 @@ WHERE name = '张三';
 # possible_keys: idx_name
 # key:           idx_name
 # 代表MySQL选择了索引查询
+EXPLAIN
+SELECT * FROM employee FORCE INDEX (idx_name) -- 强制使用索引查找
+WHERE name = '张三';
+#删除索引 DROP INDEX idx_name ON TABLE_NAME;
+DROP INDEX idx_name ON employee;
+# -----------------------------唯一索引---------------------------------
+# 普通索引、唯一索引、主键索引、组合索引，并不是四种完全互斥的东西。
+# 普通索引和唯一索引主要区别在于是否约束唯一性；主键索引是一种特殊的唯一索引，同时承担标识记录的职责；组合索引则描述索引包含几个字段。
+# 例如，一个索引既可以是唯一索引，也可以是组合索引：
+# 创建唯一性索引CREATE UNIQUE INDEX indexName ON table(column(length));
+CREATE INDEX uk_email ON employee(email(15)); -- 设置lenegth可以节省物理空间
+# 添加唯一性索引
+ALTER TABLE employee
+    ADD UNIQUE INDEX uk_email(email);
+SELECT employee.email FROM employee WHERE name = '王梦燊';
+INSERT INTO employee(email) VALUES ('emp156@lyt.com'); -- 添加同一元素时MySQL会报错
+# -----------------------------主键索引------------------------------
+#     对比	主键约束（PRIMARY KEY）	主键索引（Primary Key Index）
+#     本质	一种完整性约束	            一种数据库索引结构
+#   主要作用	保证主键值唯一且非空	    加快查询、定位记录
+#     关注点	数据是否合法	            数据如何存储和查找
+# 是否允许重复值	不允许	        取决于索引类型；主键索引不允许重复
+#  是否允许 NULL	不允许	        主键索引对应的主键列也不能为 NULL
+#   如何创建	使用 PRIMARY KEY	    通常由数据库自动创建
+# ------------------------------组合索引--------------------------------
+# 组合索引（联合索引）是指将两个或多个字段组合建立在同一个索引中，
+# 其作用是提高多条件查询的效率、减少数据扫描量，并遵循最左前缀匹配原则。
+
+# 组合索引也叫多列索引，是指一个索引同时包含两个或更多字段。
+CREATE INDEX id_depart_name ON employee(department,name);
+EXPLAIN select employee.department,employee.name from employee;
