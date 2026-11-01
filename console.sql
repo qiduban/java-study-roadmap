@@ -1188,3 +1188,25 @@ INSERT INTO employee(email) VALUES ('emp156@lyt.com'); -- 添加同一元素时M
 # 组合索引也叫多列索引，是指一个索引同时包含两个或更多字段。
 CREATE INDEX id_depart_name ON employee(department,name);
 EXPLAIN select employee.department,employee.name from employee;
+# =============================================事务=================================================
+# 事务四大特征(ACID)
+# 原子性(ATOMICITY)事务中的操作要么都不做，要么就全做。
+# 一致性(CONSISTENCY)功的事务时，数据应处于一致的状态。一个事务应该保护所有定义在数据上的不变的属性(例如完整性约束)。在完成了一个成
+# 隔离性(ISOLATION)一个事务的执行不能被其他事务干扰。
+# 持久性(DURABILITY)一个事务一旦提交，它对数据库中数据的改变就应该是永久性的
+
+
+# 1.开启事务
+START TRANSACTION;
+-- 书写事务内容
+UPDATE account -- 指定修改表
+SET account.balance = balance - 100
+WHERE account_name = '张三' and balance > 100;
+模拟错误语句
+UPDATE account
+SET balance = balance + 100
+WHERE account_name = '李四';
+
+COMMIT; -- 结束语句，提交事务
+rollback ; -- 回滚事务
+SELECT * FROM account;
