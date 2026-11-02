@@ -968,7 +968,6 @@ FROM employee;
 -- AS salary_rank：
 -- 给计算出来的排名列设置别名 salary_rank。
 
-
 -- ============================================
 -- 三、OVER()：指定窗口函数的计算规则
 -- ============================================
@@ -1202,7 +1201,6 @@ START TRANSACTION;
 UPDATE account -- 指定修改表
 SET account.balance = balance - 100
 WHERE account_name = '张三' and balance > 100;
-模拟错误语句
 UPDATE account
 SET balance = balance + 100
 WHERE account_name = '李四';
@@ -1210,3 +1208,144 @@ WHERE account_name = '李四';
 COMMIT; -- 结束语句，提交事务
 rollback ; -- 回滚事务
 SELECT * FROM account;
+-- 事务的隔离级别
+# 隔离级别由低到高
+# 1. READ UNCOMMITTED
+# 最低
+# 读未提交
+# 可能发生脏读、不可重复读、幻读。
+#
+# ==================================================== 脏读演示（必须两个连接） ====================================================
+# ★ 你上面 1219~1230 的写法为什么演示不出脏读：
+#   1) 同一个 Console = 同一个数据库连接；同一连接里再执行 START TRANSACTION，
+#      MySQL 会隐式提交上一个事务，你其实一直在“自己的事务”里看自己的修改；
+#   2) “同一个事务看到自己的修改”不是脏读，与隔离级别无关；
+#   3) 脏读 = 事务 B 读到【另一个事务 A】已修改但【未提交】的数据，必须两个独立连接。
+#
+# ★ 正确做法（IDEA）：
+#   1) 右键你的数据源 → New → Console（或右键 Console 标签 Duplicate Console），开两个 Console；
+#   2) 两个 Console 连同一个数据源，本机实际是 127.0.0.1:3306、库 lyt（3308 没有服务！）；
+#   3) 【事务A】粘到 Console 1，【事务B】粘到 Console 2；
+#   4) 按【步骤】交替执行（Ctrl+Enter 逐条），不要整段 Run。
+#   桌面上也放了两个独立文件方便直接打开：
+#     C:\Users\34005\Desktop\脏读演示_事务A_写.sql
+#     C:\Users\34005\Desktop\脏读演示_事务B_读.sql
+#
+# ---------- Console 1：事务 A（写，不提交） ----------
+# 步骤0：新 Console 可能没有默认库，不选会报 [1046] No database selected，先执行 USE lyt;
+USE lyt;
+# 步骤1
+SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+# 步骤2：记录张三当前余额（我实测时是 1100.00，以实际为准）
+SELECT account_name, balance FROM account WHERE account_name = '张三';
+# 步骤3
+START TRANSACTION;
+# 步骤4：张三 +100，不提交（A 持行锁）
+UPDATE account SET balance = balance + 100 WHERE account_name = '张三';
+# 步骤5：A 自己看到 1200.00
+SELECT account_name, balance FROM account WHERE account_name = '张三';
+# 步骤6：★★★ 切到 Console 2 执行 B 的步骤7~9，再回来 ★★★
+# 步骤10：A 回滚
+ROLLBACK;
+# 步骤11：确认张三回到 1100.00
+SELECT account_name, balance FROM account WHERE account_name = '张三';
+#
+# ---------- Console 2：事务 B（读，READ UNCOMMITTED） ----------
+# 步骤0：同样先选库
+USE lyt;
+# 步骤7
+SET SESSION TRANSACTION ISOLATION LEVEL READ UNCOMMITTED;
+# 步骤8
+START TRANSACTION;
+# 步骤9：★★★ 关键：A 未提交，B 却读到 1200.00 → 脏读 ★★★
+SELECT account_name, balance FROM account WHERE account_name = '张三';
+# 步骤12：等 A 执行 ROLLBACK 后，再执行；预期变回 1100.00（脏数据消失）
+SELECT account_name, balance FROM account WHERE account_name = '张三';
+# 步骤13
+COMMIT;
+#
+# ---------- 对照实验：REPEATABLE READ 不会脏读 ----------
+# 重新让 A 按步骤3~5 改一次（不提交），B 换成：
+# SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+# START TRANSACTION;
+# SELECT account_name, balance FROM account WHERE account_name = '张三';   -- 仍是 1100.00
+# 然后 A ROLLBACK; B COMMIT;
+#
+# ---------- 结论 ----------
+# READ UNCOMMITTED → 能读到别人未提交的数据（脏读）
+# READ COMMITTED   → 只能读已提交（解决脏读）
+# REPEATABLE READ  → 同一事务多次读结果一致（MySQL InnoDB 默认）
+# SERIALIZABLE     → 串行化，最严格、并发最低
+#
+# 注意：演示完 A 一定要 ROLLBACK（脏读演示不留数据）；B 收到脏数据后也应回滚/结束，避免长时间持锁。
+
+# 2. READ COMMITTED（不可重复读：会复现）
+# 读已提交：同一事务内两次读同一行，可能读到不同的值
+#
+-- 注意：先确认 Console 处于自动提交（autocommit=1）；若开了 Tx 事务模式，先切回自动提交。
+--       否则 SET SESSION TRANSACTION ISOLATION LEVEL 可能对已开启的事务不生效，结果会反。
+--
+-- 演示前先执行（把基线重置为 1100.00）：
+-- UPDATE account SET balance = 1100.00 WHERE account_name = '张三'; COMMIT;
+#
+USE lyt;
+SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+SELECT @@transaction_isolation; -- 应显示 READ-COMMITTED
+START TRANSACTION;
+-- 第一次读：基准值 1100.00
+SELECT account_name, balance FROM account WHERE account_name = '张三';
+-- ★ 此时切到 Console 2（console_1）执行【事务 B：把余额改成 10000 并 COMMIT】★
+-- 第二次读：READ COMMITTED 下会读到 10000.00 → 不可重复读
+SELECT account_name, balance FROM account WHERE account_name = '张三';
+COMMIT;
+-- 收尾：把余额恢复为 1100.00
+UPDATE account SET balance = 1100.00 WHERE account_name = '张三';
+COMMIT;
+# 3. REPEATABLE READ（不可重复读：不会复现）
+# MySQL InnoDB 默认；同一事务内两次读结果一致（快照读 / MVCC）
+#
+-- 演示前先执行（把基线重置为 1100.00）：
+-- UPDATE account SET balance = 1100.00 WHERE account_name = '张三'; COMMIT;
+#
+USE lyt;
+SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ ;
+SELECT @@transaction_isolation; -- 应显示 REPEATABLE-READ
+START TRANSACTION;
+-- 第一次读：基准值 1100.00（从这里建立一致性读快照）
+SELECT account_name, balance FROM account WHERE account_name = '张三';
+-- ★ 此时切到 Console 2 执行【事务 B：把余额改成 10000 并 COMMIT】★
+-- 第二次读：REPEATABLE READ 下仍是 1100.00 → 没有不可重复读
+SELECT account_name, balance FROM account WHERE account_name = '张三';
+COMMIT;
+-- 收尾：把余额恢复为 1100.00
+UPDATE account SET balance = 1100.00 WHERE account_name = '张三';
+COMMIT;
+
+# 4. SERIALIZABLE（串行化：读也会加锁，别人的写会被阻塞）
+# 最高隔离级别；InnoDB 下普通 SELECT 会加共享锁（next-key lock），事务近似串行执行。
+#
+-- 注意：先确认 Console 为自动提交（autocommit=1）。
+-- 演示前先把基线重置为 1100.00：
+-- UPDATE account SET balance = 1100.00 WHERE account_name = '张三'; COMMIT;
+--
+-- 流程：
+--   1) A 设置 SERIALIZABLE，开启事务，第一次 SELECT（普通 SELECT 也会持有共享锁）
+--   2) 切到 Console 2 执行【SERIALIZABLE 事务 B 的 UPDATE】→ 会被阻塞（等待锁）
+--   3) 回到 A 执行 COMMIT 释放锁 → B 的 UPDATE 才能继续并提交
+--   4) 之后 A 再查一次，余额变成 10000.00
+--   5) 收尾把余额恢复 1100.00
+#
+USE lyt;
+SET SESSION TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+SELECT @@transaction_isolation; -- 应显示 SERIALIZABLE
+START TRANSACTION;
+-- 第一次读：SERIALIZABLE 下普通 SELECT 也会加共享锁，B 的 UPDATE 会被挡住
+SELECT account_name, balance FROM account WHERE account_name = '张三';
+-- ★ 切到 Console 2（console_1）执行【SERIALIZABLE 事务 B】★
+--   B 的 UPDATE 会卡在锁上；不要干等，马上回到这里执行下面的 COMMIT
+COMMIT;
+-- A 提交、锁释放；等 Console 2 的 B 执行完后，这里再查应为 10000.00
+SELECT account_name, balance FROM account WHERE account_name = '张三';
+-- 收尾：把余额恢复为 1100.00
+UPDATE account SET balance = 1100.00 WHERE account_name = '张三';
+COMMIT;
