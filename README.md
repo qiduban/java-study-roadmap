@@ -85,4 +85,4 @@
 进度78：完成索引的相关学习，普通/唯一/组合/主键/了解索引的作用和增删改查2026.10.29
 进度79:复习之前所学
 进度80：学习事务的概念，并且创建了一个简单的事务2026.10.11.1
-进度81：完成初级事务的学习，了解不同的隔离级别（SERIALIZABLE,REPEATABLE READ,READ COMMITTED,READ UNCOMMITTED）和对应能解决的问题（脏读，幻读，不可重复读）
+进度81：完成初级事务的学习，了解不同的隔离级别（SERIALIZABLE,REPEATABLE READ,READ COMMITTED,READ UNCOMMITTED）和对应能解决的问题（脏读，幻读，不可重复读）2026.11.2
