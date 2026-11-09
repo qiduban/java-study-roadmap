@@ -1349,3 +1349,60 @@ SELECT account_name, balance FROM account WHERE account_name = '张三';
 -- 收尾：把余额恢复为 1100.00
 UPDATE account SET balance = 1100.00 WHERE account_name = '张三';
 COMMIT;
+# ==================================================存储========================================
+SHOW ENGINES ; -- 默认引擎为innoDB
+# 创建表并自定义引擎
+USE wms;
+-- MyISAM 引擎
+CREATE TABLE my_myisam(
+    id INT,
+    name VARCHAR(255)
+) engine = Myisam;
+SHOW TABLE STATUS LIKE 'my_myisam';-- 查看表的引擎
+DROP TABLE my_myisam;
+-- Menory 引擎
+USE wms;
+CREATE TABLE my_menory(
+    id INT,
+    name VARCHAR(255)
+) engine = MeMory;
+SHOW TABLE STATUS LIKE 'my_menory';-- 查看表的引擎
+DROP TABLE my_menory;
+use lyt;
+-- 存储引擎特点对比：
+
+-- 1. InnoDB
+-- 存储限制：64TB
+-- 事务安全：支持事务
+-- 锁机制：行级锁
+-- B+Tree 索引：支持
+-- Hash 索引：不支持（不原生支持）
+-- 全文索引：支持（MySQL 5.6 版本之后）
+-- 空间使用：高
+-- 内存使用：高
+-- 批量插入速度：低
+-- 外键支持：支持
+
+-- 2. MyISAM
+-- 存储限制：有
+-- 事务安全：不支持事务
+-- 锁机制：表级锁
+-- B+Tree 索引：支持
+-- Hash 索引：不支持（不原生支持）
+-- 全文索引：支持
+-- 空间使用：低
+-- 内存使用：低
+-- 批量插入速度：高
+-- 外键支持：不支持
+
+-- 3. Memory
+-- 存储限制：有
+-- 事务安全：不支持事务
+-- 锁机制：表级锁
+-- B+Tree 索引：支持
+-- Hash 索引：支持
+-- 全文索引：不支持
+-- 空间使用：N/A
+-- 内存使用：中等
+-- 批量插入速度：高
+-- 外键支持：不支持
