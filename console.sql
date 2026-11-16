@@ -1,3 +1,4 @@
+ALTER TABLE lyt.employee ALTER COLUMN age SET DEFAULT 0;
 # ============================索引==================================
 -- 索引结构：
 -- 1. B+Tree索引：最常见的索引类型，大部分引擎都支持，InnoDB默认使用B+Tree索引。
@@ -300,22 +301,179 @@ IGNORE 1 LINES                                   -- IGNORE 1 LINES：跳过第 1
      salary, commission, age, cretime);
 select * from employee_demo;
 drop table employee_demo;
+# ============================================================视图===========================================================
+# 视图（View）是一种虚拟存在的表。
+# 视图中的数据并不在数据库中实际存在，行和列数据来自定义视图的查询中使用的表，并且是在使用视图时动态生成的。
+# 通俗的讲，视图只保存了查询的SQL逻辑，不保存查询结果。所以我们在创建视图的时候，主要的工作就落在创建这条SQL查询语句上。
+CREATE OR REPLACE VIEW emp_v_1 AS SELECT id, name, salary from employee; -- 创建视图
+SHOW CREATE VIEW emp_v_1; -- 查看视图创建语法
+SELECT * FROM emp_v_1; -- 查看视图内容
+CREATE OR REPLACE VIEW emp_v_1 AS SELECT id, name, salary from employee WHERE salary > 10000; -- 修改视图
+ALTER VIEW emp_v_1 AS SELECT id, name, salary from employee WHERE salary > 10000;
+SELECT * FROM emp_v_1; -- 查看视图内容
+drop view emp_v_1; -- 删除视图
 
+# ============================================视图的增删改查===========================================
+USE lyt;
 
+# 准备：建练习表（employee 的副本，避免改动 employee 真数据）
+DROP VIEW IF EXISTS emp_v_crud, emp_v_stat, emp_v_rich;
+DROP TABLE IF EXISTS emp_crud;
+CREATE TABLE emp_crud LIKE employee; -- 复制 employee 的表结构（列、索引，不复制外键）
+INSERT INTO emp_crud (id, name, first_name, last_name, email, department, dept_id, manager_id, salary, commission, age, cretime)
+VALUES (9001, '测试一', '一', '测试', 't1@lyt.com', 'IT_PROG', 1, NULL, 8000.00, NULL, 25, NOW()),
+       (9002, '测试二', '二', '测试', 't2@lyt.com', 'SA_REP', 3, NULL, 12000.00, 500.00, 30, NOW());
 
+-- 简单视图：只是行列映射，可以增删改
+CREATE OR REPLACE VIEW emp_v_crud AS
+SELECT id, name, department, salary, age FROM emp_crud;
 
+# 查：视图当普通表查
+SELECT * FROM emp_v_crud;
+SELECT * FROM emp_v_crud WHERE salary > 10000 ORDER BY salary DESC;
 
+# 增：INSERT 视图 → 实际插入基表 emp_crud
+INSERT INTO emp_v_crud (id, name, department, salary, age) VALUES (9003, '测试三', 'AD_VP', 15000, 40);
+SELECT * FROM emp_crud WHERE id = 9003; -- 基表里也能查到
 
+# 改：UPDATE 视图 → 实际修改基表
+UPDATE emp_v_crud SET salary = salary + 1000 WHERE id = 9003;
+SELECT * FROM emp_v_crud WHERE id = 9003;
 
+# 删：DELETE 视图 → 实际删除基表行
+DELETE FROM emp_v_crud WHERE id = 9003;
+SELECT COUNT(*) FROM emp_v_crud; -- 删完剩 2 行
 
+# 复杂视图（带聚合 / GROUP BY / DISTINCT / UNION 等）是只读的，下面 3 条会报错
+# 注意：这 4 条“故意报错”的语句请单独选中执行，别整段跑
+CREATE OR REPLACE VIEW emp_v_stat AS
+SELECT department, AVG(salary) AS avg_salary, COUNT(*) AS cnt
+FROM emp_crud GROUP BY department;
+SELECT * FROM emp_v_stat;
+INSERT INTO emp_v_stat (department, avg_salary, cnt) VALUES ('IT_PROG', 10000, 1); -- 报错 1471：视图不可插入
+UPDATE emp_v_stat SET avg_salary = 1 WHERE department = 'IT_PROG';                 -- 报错 1288：视图不可更新
+DELETE FROM emp_v_stat WHERE department = 'IT_PROG';                              -- 报错 1288：视图不可删除
 
+# 视图里必须包含基表“非空且无默认值”的列，否则插入报错
+INSERT INTO emp_v_crud (id, name, salary) VALUES (9004, '缺age', 8000); -- 报错 1423：底层表该列没有默认值
 
+# WITH CHECK OPTION：通过视图写数据时必须满足视图的 WHERE 条件
+CREATE OR REPLACE VIEW emp_v_rich AS
+SELECT id, name, salary FROM emp_crud WHERE salary > 10000 WITH CHECK OPTION;
+UPDATE emp_v_rich SET salary = 5000 WHERE id = 9002; -- 报错 1369：改完不满足 salary > 10000
 
+# 收尾：练习完可删除
+-- DROP VIEW IF EXISTS emp_v_crud, emp_v_stat, emp_v_rich;
+-- DROP TABLE IF EXISTS emp_crud;
 
+# with cascaded check potion相关知识点
 
+CREATE OR REPLACE VIEW emp_v_2 AS SELECT emp_v_1.id, emp_v_1.name, emp_v_1.salary FROM emp_v_1 WITH CASCADED CHECK OPTION;
+ -- 该关键字会要求插入的数据满足‘父视图’的限定条件（WHERE salary > 10000）
+insert into emp_v_2 values (114514, '11', 11111); -- 不满足条件会报错
+CREATE OR REPLACE VIEW emp_v_3 AS SELECT emp_v_2.id, emp_v_2.name, emp_v_2.salary FROM emp_v_2 where salary < 15000;
+insert into emp_v_2 values (114, 111, 2000);-- 加上with casecaded check option 关键字后插入数据时会自动检查是否满足上一级视图的条件
+DROP VIEW emp_v_1;
+DROP VIEW emp_v_2;
+DROP VIEW emp_v_3;
+-- WITH CHECK OPTION：
+-- 作用：限制通过视图 INSERT 或 UPDATE 的数据必须满足视图的 WHERE 条件。
+-- 防止插入不符合条件的数据，也防止更新后数据不再符合条件。
 
+-- WITH LOCAL CHECK OPTION：
+-- 只对当前视图强制执行 CHECK OPTION 检查。
+-- 递归检查底层视图，但底层视图没有 CHECK OPTION 时，不额外强制检查其 WHERE 条件。
 
+-- WITH CASCADED CHECK OPTION：
+-- 对当前视图以及所有底层视图递归执行检查。
+-- 即使底层视图没有声明 CHECK OPTION，也会将其 WHERE 条件纳入检查。
 
+-- 注意：
+-- 1. 默认情况下，不写 LOCAL 或 CASCADED，相当于 CASCADED。
+-- 2. 只适用于可更新视图。
+-- 3. 不会修改视图原本的定义，只影响通过视图进行 INSERT 和 UPDATE 时的检查。
+# ===================================================存储过程===========================================================
+    -- 创建存储过程
+CREATE PROCEDURE fun()
+BEGIN
+    SELECT dept_id,
+        COUNT(*) FROM employee WHERE name = 'Barbara Moore'
+    GROUP BY dept_id;
+end;
+
+-- 调用存储
+call fun();
+
+-- 查看存储
+SHOW CREATE PROCEDURE fun;
+SELECT * FROM information_schema.ROUTINES WHERE ROUTINE_SCHEMA = 'employee';
+
+-- 删除存储
+DROP PROCEDURE fun;
+
+# ------------------------------------------------变量----------------------------------------------------
+ -- ‘@@’用在全局变量中
+ -- ‘@’用在自定义变量中
+-- MySQL变量：
+
+-- 1. 系统变量（@@）
+-- 由MySQL系统提供，用于控制和查看数据库运行配置。
+-- GLOBAL：全局变量，影响整个MySQL服务。
+-- SESSION：会话变量，只影响当前数据库连接。
+-- 示例：SELECT @@GLOBAL.autocommit;
+
+-- 2. 用户自定义变量（@）
+-- 由用户自行创建和赋值，不需要提前声明。
+-- 只在当前数据库连接中有效，连接关闭后自动释放。
+-- 可以在多条SQL语句中重复使用。
+-- 示例：SET @num = 100;
+--      SELECT @num;
+
+-- 3. 局部变量
+-- 使用DECLARE声明，只能在存储程序内部使用。
+-- 示例：DECLARE num INT DEFAULT 100;
+
+-- 记忆：
+-- @@：MySQL系统变量
+-- @：用户自定义变量
+-- 无@：存储程序中的局部变量
+
+-- 查看系统变量
+show global variables ;
+select @@autocommit; -- 查看系统变量的状态，接下来可以用set设置系统变量的状态
+set global autocommit = 1; -- 设置全局级别的变量 = SET @@autocommmit = 1;
+set session autocommit  = 1; -- 设置会话级别的变量 = set @autocommit = 1;
+-- 查看会话变量
+SHOW SESSION VARIABLES ;
+-- 用户自定义变量的赋值
+SET @name_my = '王梦燊';
+SET @name_mywife := '卢玥曈'; -- 这种方式同样也可以
+
+-- 用户自定义变量的使用
+SELECT @name_my, @name_mywife;
+
+INSERT INTO employee (id, name, salary, age)
+VALUES (11111, @name_mywife, 8888.00, 28);
+
+select name from employee where name = '卢玥曈';
+
+# SET @num := 100;                  -- 常量表达式
+# SET @total := 100 + 200;          -- 数学表达式
+# SET @b := @num;                   -- 变量表达式
+# SET @name := CONCAT('张', '三');  -- 函数表达式
+# SET @level := IF(@num > 50, 'A', 'B'); -- 条件表达式
+
+# ======================局部变量===============================
+CREATE PROCEDURE FUN2()
+BEGIN
+    DECLARE emp_count INT DEFAULT 0; -- 创建局部变量
+    SET emp_count := 100;
+    SELECT COUNT(*) INTO emp_count FROM employee; -- 查询总人数并将结果记录到emp_count中
+    SELECT emp_count;
+end;
+CALL FUN2(); -- 调用局部变量
+DROP PROCEDURE FUN2; -- 删除局部变量
+# 局部变量只能在声明它的 BEGIN ... END 程序块中使用，以及该程序块内部嵌套的程序块中使用。程序块执行结束后，变量就超出了作用范围。
 
 
 
