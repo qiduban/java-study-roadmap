@@ -475,21 +475,425 @@ CALL FUN2(); -- 调用局部变量
 DROP PROCEDURE FUN2; -- 删除局部变量
 # 局部变量只能在声明它的 BEGIN ... END 程序块中使用，以及该程序块内部嵌套的程序块中使用。程序块执行结束后，变量就超出了作用范围。
 
+# --------------- if else 条件判断------------------
+CREATE PROCEDURE FUN3(in score int, out result varchar(255))
+BEGIN
+-- DECLARE score int default 0;
+-- DECLARE result varchar(255) default '-1';-- 设置局部变量并规定初始值
+    if score >=  85 then
+        set result := '优秀';
+        elseif score > 70 and score <= 85 then
+            set result := '良好';
+            elseif score >= 60 and score <= 70 then
+                set result = '及格';
+                elseif score < 60 then
+                    set result = '不及格';
+    end if;
+    select result;
+end;
+call fun3(98, @result);-- 调用过程时需要自定义一个变量来接收out的结果
+drop procedure fun3;
 
+-- MySQL存储过程参数类型：
+-- 主要分为IN、OUT、INOUT三种，用于控制数据传递方向。
 
+-- 1. IN（输入参数）
+-- 调用存储过程时传入数据。
+-- 存储过程可以读取、计算和修改参数。
+-- 内部修改不会返回给调用者。
+-- 默认参数类型就是IN。
+-- 示例：CREATE PROCEDURE p1(IN num INT)
 
+-- 2. OUT（输出参数）
+-- 用于将存储过程内部处理的结果返回给调用者。
+-- 进入存储过程时，参数初始值为NULL。
+-- 通常使用SET或SELECT...INTO给参数赋值。
+-- 调用时使用用户自定义变量接收返回结果。
+-- 示例：CALL p1(@result);
 
+-- 3. INOUT（输入输出参数）
+-- 调用时需要传入初始值。
+-- 存储过程可以读取并修改参数。
+-- 修改后的结果会返回给调用者。
+-- 调用前需要初始化用户自定义变量。
+-- 示例：SET @num = 100;
+--      CALL p1(@num);
 
+-- 4. 注意事项
+-- 参数在CREATE PROCEDURE的参数列表中声明。
+-- 局部变量使用DECLARE在BEGIN...END开头声明。
+-- 参数和局部变量在存储过程内部使用时不需要加@。
+-- 普通SQL调用存储过程时，OUT和INOUT使用用户变量接收结果。
+-- 存储函数的参数只能是IN。
 
+-- 记忆：
+-- IN：只进不出。
+-- OUT：只出不进。
+-- INOUT：既进又出。
 
+# ============================================CASE 表达式===========================================
+USE lyt;
 
+# CASE 是“表达式”，不是语句：它返回一个值，所以能放在 SELECT、WHERE、GROUP BY、HAVING、ORDER BY、UPDATE SET 里。
+# 两种写法：
+# 1. 简单 CASE：CASE 列 WHEN 值 THEN 结果 ... ELSE 默认 END —— 只能做等值匹配（相当于 switch）
+# 2. 搜索 CASE：CASE WHEN 条件 THEN 结果 ... ELSE 默认 END —— 能做范围、多条件判断（相当于 if / elseif，用得最多）
+#
+# 三条必须记住的规则：
+# - 从上往下匹配，命中第一个就停，后面的分支不再判断 → 条件的顺序直接决定结果
+# - 没有 ELSE 且全部条件不满足时，整个 CASE 返回 NULL（不是 0，也不是空字符串）
+# - 所有 THEN/ELSE 的返回类型最好一致（数字和字符串混着写会被隐式转换）
 
+-- 1. 简单 CASE：拿列的值去逐个等值匹配
+SELECT id, name, department,
+       CASE department
+           WHEN 'IT_PROG' THEN '研发'
+           WHEN 'SA_REP'  THEN '销售'
+           WHEN 'AD_VP'   THEN '行政'
+           ELSE '其他部门'
+       END AS dept_cn
+FROM employee
+LIMIT 10;
+# 简单 CASE 只能写 WHEN 值，写不了 WHEN department LIKE '%REP' 这种条件
+# 坑：CASE department WHEN NULL THEN ... 永远不成立，因为 department = NULL 结果是 UNKNOWN，判 NULL 要用搜索 CASE + IS NULL
 
+-- 2. 搜索 CASE：按范围 / 多条件判断（最常用）
+SELECT id, name, salary,
+       CASE
+           WHEN salary IS NULL  THEN '无薪资'
+           WHEN salary >= 20000 THEN '高薪'
+           WHEN salary >= 12000 THEN '中高'
+           WHEN salary >= 8000  THEN '中等'
+           ELSE '偏低'
+       END AS salary_level
+FROM employee
+WHERE id <= 20
+ORDER BY salary DESC;
+# 区间要从大到小写：如果把 WHEN salary >= 8000 放在最前面，20000 的也会被它先命中，全变成“中等”
 
+-- 3. 没有 ELSE → 不满足条件返回 NULL，用 IFNULL / COALESCE 兜底
+SELECT name, commission,
+       CASE WHEN commission IS NOT NULL THEN commission END AS comm_raw,              -- 没有 ELSE，NULL 原样返回
+       IFNULL(CASE WHEN commission IS NOT NULL THEN commission END, 0) AS comm_safe  -- 用 IFNULL 把 NULL 变成 0
+FROM employee
+WHERE id <= 10;
+# NULL 参与 + - * / 和 SUM/AVG 都会把结果带成 NULL，所以聚合里一定要兜住
 
+-- 4. 用在 ORDER BY：自定义排序（不按字母序、不按数字序，按我指定的权重）
+SELECT id, name, department
+FROM employee
+ORDER BY CASE department
+             WHEN 'AD_VP'   THEN 1
+             WHEN 'IT_PROG' THEN 2
+             WHEN 'SA_REP'  THEN 3
+             ELSE 4
+         END,
+         id
+LIMIT 20;
+# 后面再跟一个 id 是为了同一权重内部顺序稳定（否则同组内顺序不确定）
 
+-- 5. 和聚合函数配合做“行转列/条件统计”（面试常考）
+SELECT department,
+       COUNT(*)                                                          AS `总人数`,
+       SUM(CASE WHEN salary >= 20000 THEN 1 ELSE 0 END)                   AS `高薪人数`,
+       SUM(CASE WHEN salary >= 8000 AND salary < 20000 THEN 1 ELSE 0 END) AS `中等人数`,
+       SUM(CASE WHEN salary < 8000 OR salary IS NULL THEN 1 ELSE 0 END)   AS `低薪人数`
+FROM employee
+GROUP BY department;
+# SUM(CASE WHEN 条件 THEN 1 ELSE 0 END) 等价于 COUNT(CASE WHEN 条件 THEN 1 END)
+# 这里不能用 COUNT(*)：COUNT(*) 数的是行数，不会按条件过滤
 
+-- 6. 用在 WHERE：语法上允许，但 CASE 包住索引列 = 在列上做运算 → 索引直接失效
+EXPLAIN SELECT * FROM employee WHERE CASE WHEN id > 0 THEN id END = 156;
+# type=ALL：id 被 CASE 裹住，PRIMARY 用不上
+EXPLAIN SELECT * FROM employee WHERE id = 156;
+# type=const  key=PRIMARY
 
+-- 7. 用在 UPDATE：一条 SQL 按条件批量改不同的值（比跑好几条 UPDATE 省事）
+DROP TABLE IF EXISTS emp_case_demo;
+CREATE TABLE emp_case_demo LIKE employee; -- 复制 employee 的结构，不动真数据
+INSERT INTO emp_case_demo (id, name, department, salary, age)
+VALUES (1, '甲', 'IT_PROG', 25000.00, 30),
+       (2, '乙', 'SA_REP', 12000.00, 26),
+       (3, '丙', 'AD_VP',   6000.00, 22);
 
+UPDATE emp_case_demo
+SET salary = CASE
+                 WHEN salary >= 20000 THEN salary * 1.05  -- 高薪涨 5%
+                 WHEN salary >= 10000 THEN salary * 1.10  -- 中薪涨 10%
+                 ELSE salary * 1.20                       -- 低薪涨 20%
+             END;
+SELECT id, name, salary FROM emp_case_demo;
 
+-- 8. 用在 GROUP BY：按自定义区间分组统计
+SELECT CASE
+           WHEN age < 25 THEN '25岁以下'
+           WHEN age < 35 THEN '25-34'
+           WHEN age < 45 THEN '35-44'
+           ELSE '45岁以上'
+       END                     AS age_group,
+       COUNT(*)                AS cnt,
+       ROUND(AVG(salary), 2)   AS avg_salary
+FROM employee
+GROUP BY age_group
+ORDER BY age_group;
+# MySQL 允许 GROUP BY 直接用 SELECT 里的别名；写法虽然方便，但如果分组字段上有索引，这种“先算再分组”的写法就用不上它了（本例没建 age 单列索引）
 
+-- 收尾：练习完把临时表删掉
+DROP TABLE IF EXISTS emp_case_demo;
+
+-- CASE 踩坑清单：
+-- 1. 命中即停：条件的顺序 = 结果，范围条件一定从大到小（或从小到大 + 反向），别乱序。
+-- 2. 不写 ELSE 返回 NULL：后面接运算或聚合一定用 IFNULL / COALESCE 兜底。
+-- 3. 类型要统一：THEN 1 和 THEN '1' 混着写会被隐式转成同一类型，比较结果可能不是你想要的。
+-- 4. 别在 WHERE 里用 CASE 包住索引列：等价于在列上做函数运算 → type=ALL 全表扫描。
+-- 5. CASE 是表达式不是语句：不能单独写 `CASE ... END;` 当 if 用；存储过程里做流程控制要用 IF ... THEN ... ELSEIF ... END IF。
+-- 6. 判 NULL 别用简单 CASE：CASE col WHEN NULL 永远不匹配，要写 CASE WHEN col IS NULL THEN ...
+
+-- ============================================递归循环===================================================
+-- 设置当前会话允许存储过程递归的最大深度为 10
+SET SESSION max_sp_recursion_depth = 10;
+CREATE PROCEDURE FUN4(IN num INT, OUT r INT)
+BEGIN
+    IF num <= 0 THEN
+        set r = 1;
+    else
+        call fun4(num - 1,r);
+        set r = r * num;
+        end if;
+
+    end;
+call FUN4(5,@r);
+select @r;
+drop procedure fun4;
+
+-- ============================================while循环==========================================
+create procedure FUN5(in n int, out r int)
+begin
+    declare total int default 0;
+    while n > 0 do
+        set total = total + n;
+        set n = n -1;
+        end while;
+    select total;
+end;
+call FUN5(10,@R);
+
+-- repeat（类似do.....while）
+create procedure FUN6(in n int, out r int)
+begin
+    declare total int default 0;
+    repeat
+        set total = total + n;
+        set n = n - 1;
+    until n = 0
+        end repeat;
+    select total;
+end;
+call FUN6(10,@R);
+-- loop循环
+
+# ============================================LOOP 循环===========================================
+USE lyt;
+
+# LOOP 语法结构：
+# [循环标签:] LOOP
+#     循环体;
+#     LEAVE 标签;      -- 跳出循环，相当于 break，不带它就是个死循环
+#     ITERATE 标签;    -- 跳过本轮剩下的语句，回到循环开头，相当于 continue
+# END LOOP [循环标签];
+#
+# 三条必须记住的规则：
+# 1. LOOP 自己不判断条件，是死循环，退出全靠 LEAVE → 想让循环停下，LEAVE 是必需品。
+# 2. 标签（label）必须跟着写：MySQL 没有 break / continue 这两个关键字，
+#    只能写 LEAVE 标签名 / ITERATE 标签名，光写 LEAVE; 会直接语法报错。
+# 3. LOOP 只能写在存储过程、函数、触发器、事件里；在普通 SQL 脚本里单独写一个 LOOP 会报语法错误。
+#
+# LEAVE 和 ITERATE 的区别：
+#   LEAVE   往外跳：离开指定标签所在的循环（或 BEGIN...END 代码块），后面的循环不再执行。
+#   ITERATE 往回跳：结束本轮，从标签所在循环的下一轮继续，循环没结束。
+#   两个的作用域不同：ITERATE 只能用于循环（LOOP / WHILE / REPEAT）；
+#   LEAVE 除了循环，还能用于带标签的 BEGIN...END 代码块。
+
+-- 1. 基础用法：LOOP + LEAVE 求 1 到 n 的和
+DROP PROCEDURE IF EXISTS p_loop_sum;
+CREATE PROCEDURE p_loop_sum(IN n INT, OUT total INT)
+BEGIN
+    DECLARE i INT DEFAULT 1;
+    SET total := 0;
+    my_loop: LOOP                          -- my_loop：循环标签，后面 LEAVE 要用到它
+        IF i > n THEN
+            LEAVE my_loop;                 -- LEAVE：条件一到就跳出整个循环，没有它这里会无限循环
+        END IF;
+        SET total := total + i;
+        SET i := i + 1;                    -- 计数器自增必须写在循环体里，漏了同样会死循环
+    END LOOP my_loop;                      -- 结束标签可写可不写，写就必须和开始标签同名
+END;
+
+CALL p_loop_sum(100, @total);
+SELECT @total;                             -- 5050
+
+-- 2. ITERATE：跳过本轮剩余语句，直接进入下一轮（求 1 到 n 里的偶数之和）
+DROP PROCEDURE IF EXISTS p_loop_iterate;
+CREATE PROCEDURE p_loop_iterate(IN n INT, OUT total INT)
+BEGIN
+    DECLARE i INT DEFAULT 0;
+    SET total := 0;
+    even_loop: LOOP
+        SET i := i + 1;                    -- 先自增，再做判断：ITERATE 会跳过后面的语句，自增写在后边就死循环了
+        IF i > n THEN
+            LEAVE even_loop;
+        END IF;
+        IF MOD(i, 2) = 1 THEN
+            ITERATE even_loop;             -- 奇数：跳过下面的累加，直接回循环开头算下一个 i
+        END IF;
+        SET total := total + i;            -- 只有偶数能走到这一行
+    END LOOP even_loop;
+END;
+
+CALL p_loop_iterate(10, @total);
+SELECT @total;                             -- 2+4+6+8+10 = 30
+
+# ITERATE 最容易踩的坑：它跳过的就是循环体里它后面所有语句，
+# 所以“计数器自增”和“退出条件判断”一定要放在 ITERATE 之前，否则循环变量永远不变 → 死循环。
+
+-- 3. 嵌套循环：内层 LEAVE 外层标签，一口气跳出两层
+DROP PROCEDURE IF EXISTS p_loop_nested;
+CREATE PROCEDURE p_loop_nested()
+BEGIN
+    DECLARE i INT DEFAULT 1;
+    DECLARE j INT DEFAULT 1;
+    DROP TEMPORARY TABLE IF EXISTS tmp_loop;                       -- 临时表只在当前连接可见，断开自动消失
+    CREATE TEMPORARY TABLE tmp_loop (i INT, j INT);
+    outer_loop: LOOP                                               -- 外层标签
+        SET j := 1;
+        inner_loop: LOOP                                           -- 内层标签
+            IF j > 3 THEN
+                LEAVE inner_loop;                                  -- 只跳出内层，外层继续
+            END IF;
+            INSERT INTO tmp_loop VALUES (i, j);                    -- 每轮的结果先攒进临时表，避免循环里刷一堆结果集
+            IF i = 2 AND j = 2 THEN
+                LEAVE outer_loop;                                  -- 标签写外层：直接连外层一起跳出
+            END IF;
+            SET j := j + 1;
+        END LOOP inner_loop;
+        SET i := i + 1;
+        IF i > 3 THEN
+            LEAVE outer_loop;
+        END IF;
+    END LOOP outer_loop;
+    SELECT * FROM tmp_loop;                                        -- 最后统一输出：i=1 走完 j=1..3，i=2 走到 j=2 就整体退出
+END;
+
+CALL p_loop_nested();                          -- 共 5 行：(1,1)(1,2)(1,3)(2,1)(2,2)
+
+# 嵌套时 LEAVE 后面跟哪个标签，就跳到哪一层，这是“跳出多层循环”的唯一写法；
+# 标签名建议取得有区分度（outer_loop / inner_loop），嵌套里都叫 loop 的话很难看清跳的是哪一层。
+
+-- 4. LEAVE 也能跳出一个带标签的 BEGIN...END 代码块（不一定是循环）
+DROP PROCEDURE IF EXISTS p_leave_block;
+CREATE PROCEDURE p_leave_block(IN v INT, OUT msg VARCHAR(50))
+BEGIN
+    block_one: BEGIN                       -- 代码块也可以带标签
+        IF v < 0 THEN
+            SET msg := '负数，提前跳出代码块';
+            LEAVE block_one;               -- 直接跳到 END block_one 之后，后面的语句都不执行
+        END IF;
+        SET msg := CONCAT('处理完成：', v);
+    END block_one;
+END;
+
+CALL p_leave_block(-1, @msg);
+SELECT @msg;                                   -- 负数，提前跳出代码块
+CALL p_leave_block(10, @msg);
+SELECT @msg;                                   -- 处理完成：10
+
+-- 5. 三种循环对比：同一个任务（1 到 n 求和）用 LOOP / WHILE / REPEAT 各写一遍
+# LOOP   ：无条件的死循环，退出条件自己写 LEAVE，判断位置随意 → 最灵活，也最容易写出死循环
+# WHILE  ：先判断后执行，条件为真才进循环体，可能一次都不执行
+# REPEAT ：先执行后判断，至少执行一次，UNTIL 后面写的是“退出条件”（注意和 WHILE 相反）
+
+DROP PROCEDURE IF EXISTS p_while_sum;
+CREATE PROCEDURE p_while_sum(IN n INT, OUT total INT)
+BEGIN
+    DECLARE i INT DEFAULT 1;
+    SET total := 0;
+    WHILE i <= n DO                        -- 这里写的是“继续条件”，和 REPEAT 的 UNTIL 相反
+        SET total := total + i;
+        SET i := i + 1;
+    END WHILE;
+END;
+
+DROP PROCEDURE IF EXISTS p_repeat_sum;
+CREATE PROCEDURE p_repeat_sum(IN n INT, OUT total INT)
+BEGIN
+    DECLARE i INT DEFAULT 1;
+    SET total := 0;
+    REPEAT
+        SET total := total + i;
+        SET i := i + 1;
+    UNTIL i > n END REPEAT;                -- UNTIL 后面写“什么时候退出”，条件为真就结束
+END;
+
+CALL p_while_sum(100, @w);
+CALL p_repeat_sum(100, @r);
+SELECT @w, @r;                             -- 都是 5050
+
+CALL p_while_sum(0, @w);
+CALL p_repeat_sum(0, @r);
+SELECT @w, @r;                             -- WHILE 得 0，REPEAT 得 1
+# 这就是“先判断”和“后判断”的差别：n=0 时 WHILE 一次都没进去，REPEAT 硬算了一轮。
+# 反过来，如果业务上要求“至少执行一次”（比如先取一次数据再决定要不要继续），就用 REPEAT。
+
+-- 6. 实战：用循环做批量插入（顺便看清循环的性能问题）
+DROP TABLE IF EXISTS emp_loop_demo;
+CREATE TABLE emp_loop_demo (
+    id     INT PRIMARY KEY,
+    name   VARCHAR(50),
+    salary DECIMAL(10, 2)
+);
+
+DROP PROCEDURE IF EXISTS p_loop_insert;
+CREATE PROCEDURE p_loop_insert(IN cnt INT)
+BEGIN
+    DECLARE i INT DEFAULT 1;
+    ins_loop: LOOP
+        IF i > cnt THEN
+            LEAVE ins_loop;
+        END IF;
+        INSERT INTO emp_loop_demo (id, name, salary)
+        VALUES (i, CONCAT('批量员工', i), 5000 + i * 100);
+        SET i := i + 1;
+    END LOOP ins_loop;
+END;
+
+CALL p_loop_insert(100);
+SELECT COUNT(*), MIN(salary), MAX(salary) FROM emp_loop_demo;   -- 100 行，5100 ~ 15000
+
+# 注意：循环里一条一条 INSERT 是“逐行提交”，每行都要走一次解析 + 事务，数据量一大就非常慢。
+# 能写成一条集合操作就别用循环，同样的结果下面这一条 SQL 就够了：
+# INSERT INTO emp_loop_demo (id, name, salary)
+# SELECT n, CONCAT('批量员工', n), 5000 + n * 100
+# FROM (WITH RECURSIVE seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM seq WHERE n < 100)
+#       SELECT n FROM seq) t;
+# 循环更适合场景本身就必须逐行处理的活：逐行校验、调外部接口、按行做不同分支。
+
+-- 收尾：练习完清理掉
+DROP PROCEDURE IF EXISTS p_loop_sum;
+DROP PROCEDURE IF EXISTS p_loop_iterate;
+DROP PROCEDURE IF EXISTS p_loop_nested;
+DROP PROCEDURE IF EXISTS p_leave_block;
+DROP PROCEDURE IF EXISTS p_while_sum;
+DROP PROCEDURE IF EXISTS p_repeat_sum;
+DROP PROCEDURE IF EXISTS p_loop_insert;
+DROP TABLE IF EXISTS emp_loop_demo;
+
+# LOOP 踩坑清单：
+# 1. 死循环：LOOP 一定要有 LEAVE 出口，计数器自增不能写在 ITERATE 后面。
+# 2. LEAVE / ITERATE 后面必须带标签，MySQL 没有 break / continue 关键字。
+# 3. ITERATE 只能用在循环里；LEAVE 除了循环，还能跳出带标签的 BEGIN...END。
+# 4. LEAVE 跟的是哪层的标签就跳哪层，嵌套循环跳出多层只能靠给外层标签。
+# 5. 循环变量用 DECLARE 声明，别和输入参数重名，否则 SET 改的是参数不是变量，容易出诡异结果。
+# 6. 存储过程里的死循环 max_execution_time 管不住，只能另外开个连接 KILL 掉。
+# 7. DataGrip 里整段执行没问题；但如果用 mysql 命令行客户端，CREATE PROCEDURE 里的分号
+#    会被当成语句结束，得先写 DELIMITER $$，过程写完再 DELIMITER ; 改回来。
