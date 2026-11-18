@@ -441,8 +441,8 @@ DROP PROCEDURE fun;
 -- 查看系统变量
 show global variables ;
 select @@autocommit; -- 查看系统变量的状态，接下来可以用set设置系统变量的状态
-set global autocommit = 1; -- 设置全局级别的变量 = SET @@autocommmit = 1;
-set session autocommit  = 1; -- 设置会话级别的变量 = set @autocommit = 1;
+set global autocommit = 1; -- 设置全局级别的变量 = SET @@autocommit = 1;
+set session autocommit  = 1; -- 设置会话级别的变量 = SET @@session.autocommit = 1;（注意不是 @autocommit，@ 开头的是用户自定义变量，两回事）
 -- 查看会话变量
 SHOW SESSION VARIABLES ;
 -- 用户自定义变量的赋值
@@ -560,7 +560,6 @@ LIMIT 10;
 -- 2. 搜索 CASE：按范围 / 多条件判断（最常用）
 SELECT id, name, salary,
        CASE
-           WHEN salary IS NULL  THEN '无薪资'
            WHEN salary >= 20000 THEN '高薪'
            WHEN salary >= 12000 THEN '中高'
            WHEN salary >= 8000  THEN '中等'
@@ -597,7 +596,7 @@ SELECT department,
        COUNT(*)                                                          AS `总人数`,
        SUM(CASE WHEN salary >= 20000 THEN 1 ELSE 0 END)                   AS `高薪人数`,
        SUM(CASE WHEN salary >= 8000 AND salary < 20000 THEN 1 ELSE 0 END) AS `中等人数`,
-       SUM(CASE WHEN salary < 8000 OR salary IS NULL THEN 1 ELSE 0 END)   AS `低薪人数`
+       SUM(CASE WHEN salary < 8000 THEN 1 ELSE 0 END)   AS `低薪人数`
 FROM employee
 GROUP BY department;
 # SUM(CASE WHEN 条件 THEN 1 ELSE 0 END) 等价于 COUNT(CASE WHEN 条件 THEN 1 END)
@@ -676,6 +675,7 @@ begin
         set n = n -1;
         end while;
     select total;
+    set r := total;
 end;
 call FUN5(10,@R);
 
@@ -689,6 +689,7 @@ begin
     until n = 0
         end repeat;
     select total;
+    set r := total;
 end;
 call FUN6(10,@R);
 -- loop循环
@@ -897,3 +898,341 @@ DROP TABLE IF EXISTS emp_loop_demo;
 # 6. 存储过程里的死循环 max_execution_time 管不住，只能另外开个连接 KILL 掉。
 # 7. DataGrip 里整段执行没问题；但如果用 mysql 命令行客户端，CREATE PROCEDURE 里的分号
 #    会被当成语句结束，得先写 DELIMITER $$，过程写完再 DELIMITER ; 改回来。
+
+
+# ========================================================游标============================================================
+-- 声明游标
+-- 声明游标
+CREATE PROCEDURE FUN7()
+BEGIN
+    declare done boolean default false;
+    declare c_id int;
+    declare c_name varchar(255);
+    declare c_salary int ;-- 声明局部变量用来接收fetch输出的数据
+
+    DECLARE cursor1 CURSOR FOR
+        SELECT id, name, salary
+        FROM employee; -- 创建游标cursor
+    declare continue handler for not found
+        set done := true; -- 创建处理程序，处理程序的声明不能在游标之后
+    open cursor1; -- 打开一个游标
+    my_loop : loop
+        if done then
+            leave my_loop;
+        end if;
+    fetch cursor1 into c_id, c_name, c_salary;-- 每执行一次 FETCH，游标就尝试读取下一条记录，而不是每次都读取第一条
+        end loop;
+    close cursor1;
+end;
+call FUN7();
+drop procedure FUN7;
+-- HANDLER 并不是主动检查 FETCH。
+-- 它提前声明了一个条件处理规则：
+-- 当 FETCH 没有下一条记录时，MySQL 自动产生 NOT FOUND 条件；
+-- HANDLER 捕获该条件，并执行 SET done = TRUE；
+-- 因为使用 CONTINUE，所以程序继续执行 FETCH 后面的 IF 判断；
+-- 最终通过 LEAVE 退出循环。
+
+
+# ============================================条件处理程序（HANDLER）===========================================
+USE lyt;
+
+# 条件处理程序 = 存储程序里的 try / catch：
+# 在块的开头提前声明一条规则 ——“如果发生了 X 条件，就执行 Y 语句”，
+# 之后这个块里任何语句触发 X，都会自动跳到 Y。
+#
+# 它和 IF 的区别：
+#   IF      是主动检查 —— 先算条件，再决定走哪条分支，事前知道有几种情况；
+#   HANDLER 是被动捕获 —— 出事才触发，用来对付“不知道会不会发生、发生了程序就会中断”的错误。
+#
+# 语法结构：
+# DECLARE handler_action HANDLER
+#     FOR condition_value [, condition_value] ...
+#     statement
+#
+# handler_action（处理完之后的动作）：
+#   CONTINUE  处理完，从“出错那条语句之后”接着往下执行
+#   EXIT      处理完，直接结束声明它的那个 BEGIN...END 块（哪怕错误发生在更内层）
+#   UNDO      MySQL 不支持，写了直接语法报错
+#
+# condition_value（触发条件，六选一）：
+#   1062                MySQL 错误码，精确匹配
+#   SQLSTATE '23000'    SQLSTATE 值，精确匹配
+#   condition_name      用 DECLARE ... CONDITION 起的别名
+#   SQLWARNING          SQLSTATE 以 '01' 开头的一类（警告）
+#   NOT FOUND           SQLSTATE 以 '02' 开头的一类（游标取完 / SELECT INTO 没查到）
+#   SQLEXCEPTION        SQLSTATE 不以 '00'/'01'/'02' 开头的一类（真正的错误，最常用）
+#
+# 声明位置（顺序不能乱，这是硬规定）：
+#   变量 / 条件声明  →  游标声明  →  处理程序声明  →  可执行语句
+#   处理程序必须写在变量和游标之后、可执行语句之前；顺序写反报 1337。
+#
+# 没声明处理器时的默认动作（很多“程序莫名中断”就是它）：
+#   SQLEXCEPTION  在出错语句处直接终止程序（相当于自带的 EXIT）
+#   SQLWARNING    继续执行（相当于自带的 CONTINUE）
+#   NOT FOUND     正常产生时继续；由 SIGNAL / RESIGNAL 抛出时终止
+#
+# 条件三大类互斥，别搞混：
+#   SQLWARNING   只接警告，不接错误
+#   NOT FOUND    只接“没数据”，不接错误
+#   SQLEXCEPTION 只接错误，不接上面两类
+
+-- 0. 准备练习表（独立的表，不动 employee 真数据）
+DROP TABLE IF EXISTS emp_handler_demo;
+CREATE TABLE emp_handler_demo (
+    id     INT PRIMARY KEY,
+    name   VARCHAR(50) NOT NULL,
+    salary DECIMAL(10, 2)
+);
+INSERT INTO emp_handler_demo (id, name, salary)
+VALUES (1, '甲', 8000.00),
+       (2, '乙', 12000.00);
+SELECT * FROM emp_handler_demo;
+
+-- 1. 先看“没有处理器”是什么下场：SQLEXCEPTION 默认 = 直接终止
+DROP PROCEDURE IF EXISTS p_no_handler;
+CREATE PROCEDURE p_no_handler()
+BEGIN
+    INSERT INTO emp_handler_demo VALUES (1, '重复甲', 9000);       -- 主键冲突，1062
+    SELECT '这行不会输出：上面报错后程序已终止' AS msg;             -- 默认 EXIT，走不到这里
+END;
+
+CALL p_no_handler();   -- 报错 Duplicate entry '1' for key 'emp_handler_demo.PRIMARY'
+DROP PROCEDURE IF EXISTS p_no_handler;
+# 注意：这里连 CALL 都算“报错结束”，不会有任何结果集返回。
+# 结论：想让程序在出错后继续跑，必须自己声明处理器，默认行为永远是终止。
+
+-- 2. CONTINUE：捕获、处理、然后接着往下执行
+DROP PROCEDURE IF EXISTS p_continue;
+CREATE PROCEDURE p_continue()
+BEGIN
+    DECLARE CONTINUE HANDLER FOR 1062                              -- 只接主键冲突这一种错误
+        SELECT '【处理器】捕获到 1062 主键冲突，继续执行' AS handle_msg;
+
+    SET @x := 1;
+    INSERT INTO emp_handler_demo VALUES (1, '重复甲', 9000);        -- 冲突 → 触发处理器
+    SET @x := 2;                                                   -- CONTINUE：这句照常执行
+    INSERT INTO emp_handler_demo VALUES (3, '丙', 7000);            -- 正常插入
+    SET @x := 3;
+    SELECT @x AS x;                                                -- 3，证明程序没被中断
+END;
+
+CALL p_continue();
+SELECT * FROM emp_handler_demo;   -- 只多了 id=3；冲突那行不会进表
+# 处理器只管“跳过这条出错的语句”，出错语句本身仍然失败（那行没插进去），不会帮你重试。
+
+-- 3. EXIT：捕获、处理、然后整块结束
+DROP PROCEDURE IF EXISTS p_exit;
+CREATE PROCEDURE p_exit()
+BEGIN
+    DECLARE EXIT HANDLER FOR 1062
+        SELECT '【处理器】捕获到 1062，登记一下，结束整个块' AS handle_msg;
+
+    INSERT INTO emp_handler_demo VALUES (1, '重复甲', 9000);        -- 冲突 → 触发处理器
+    INSERT INTO emp_handler_demo VALUES (4, '丁', 6000);            -- EXIT：这句不会执行
+    SELECT '这句也不会执行' AS msg;
+END;
+
+CALL p_exit();
+SELECT * FROM emp_handler_demo;   -- 没有 id=4
+# EXIT / CONTINUE 是两种完全不同的收尾策略：
+#   EXIT     —— 后面的业务逻辑不该在“前提已经坏了”的情况下继续跑（比如扣款失败就别再发货）
+#   CONTINUE —— 单条失败不影响整体（比如批量导入跳过脏数据）
+
+-- 4. 条件名（DECLARE ... CONDITION）：给错误码起个别名，处理程序里用名字写，可读性好很多
+DROP PROCEDURE IF EXISTS p_cond_name;
+CREATE PROCEDURE p_cond_name()
+BEGIN
+    DECLARE dup_key  CONDITION FOR SQLSTATE '23000';               -- 别名：违反完整性约束
+    DECLARE CONTINUE HANDLER FOR dup_key
+        SELECT '【处理器】SQLSTATE 23000：完整性约束被违反' AS handle_msg;
+
+    INSERT INTO emp_handler_demo VALUES (1, '重复甲', 9000);        -- 1062 主键重复
+    INSERT INTO emp_handler_demo VALUES (NULL, '空主键', 1000);     -- 1048 主键为 NULL
+    SELECT '两条都出错，都被 CONTINUE 跳过，程序走到这里' AS msg;
+END;
+
+CALL p_cond_name();
+# 1062 和 1048 是两个不同错误码，但 SQLSTATE 都是 23000，
+# 所以一个 SQLSTATE '23000' 就同时接住了 —— 这正是“错误码”和“错误类”的区别：
+#   错误码 / SQLSTATE  精确匹配，只接那一种；
+#   SQLEXCEPTION 等类  模糊匹配，一个处理器接一大片（方便，也更容易误吞）。
+
+-- 5. NOT FOUND：不只是游标取完才触发，SELECT ... INTO 查不到也会触发
+DROP PROCEDURE IF EXISTS p_not_found;
+CREATE PROCEDURE p_not_found()
+BEGIN
+    DECLARE v_name VARCHAR(50) DEFAULT '还没赋值';
+    DECLARE CONTINUE HANDLER FOR NOT FOUND
+        SET v_name := '查无此人';                                   -- 没数据时给个兜底值
+
+    SELECT name INTO v_name FROM emp_handler_demo WHERE id = 99;    -- 查不到 → SQLSTATE 02000
+    SELECT v_name AS result;
+END;
+
+CALL p_not_found();   -- 查无此人
+# 没有这个处理器的话，SELECT ... INTO 查不到会报 1329 No data，程序按错误处理直接终止。
+# 反过来的坑：一旦声明了 NOT FOUND 处理器，块里“所有”查不到数据的语句都会静默走它，
+# 包括你并不想忽略的那些 —— 作用域是整个块，不是某一条语句。
+
+-- 6. SQLEXCEPTION 兜底 + GET DIAGNOSTICS 取错误详情
+DROP PROCEDURE IF EXISTS p_diag;
+CREATE PROCEDURE p_diag()
+BEGIN
+    DECLARE v_state VARCHAR(5);
+    DECLARE v_no    INT;
+    DECLARE v_msg   TEXT;
+    DECLARE hit     INT DEFAULT 0;                                  -- 标志：处理器是否被触发
+    DECLARE CONTINUE HANDLER FOR SQLEXCEPTION                       -- 一把梭：所有错误都接
+        SET hit := 1;                                               -- 处理器只做标记，取错放在外面做
+
+    INSERT INTO emp_handler_demo VALUES (5, '戊', 11000);           -- 正常
+    INSERT INTO emp_handler_demo VALUES (6, NULL, 11000);           -- name NOT NULL → 1048
+    IF hit = 1 THEN
+        GET DIAGNOSTICS CONDITION 1
+            v_state = RETURNED_SQLSTATE,
+            v_no    = MYSQL_ERRNO,
+            v_msg   = MESSAGE_TEXT;                                -- 从诊断区把错误详情抠出来
+    END IF;
+    INSERT INTO emp_handler_demo VALUES (7, '庚', 13000);           -- 前面出错也照样执行
+    SELECT v_state AS `错误状态`, v_no AS `错误码`, v_msg AS `错误信息`;  -- 别名别写 sqlstate / errno：SQLSTATE 是 MySQL 关键字，errno 是内置函数名，不加反引号会报语法错误
+END;
+
+CALL p_diag();
+# 处理器只知道“出错了”，错误码和错误原文要靠诊断区取：
+#   GET DIAGNOSTICS CONDITION 1 ...   CONDITION 1 = 当前这一条诊断记录
+#   RETURNED_SQLSTATE / MYSQL_ERRNO / MESSAGE_TEXT  最常用的三个字段
+# 实战里至少把 v_msg 记进日志表，否则吞掉的错误永远查不出来。
+
+-- 7. SIGNAL：主动抛错（做业务校验），也能被同类处理器接住
+DROP PROCEDURE IF EXISTS p_signal;
+CREATE PROCEDURE p_signal(IN v_salary DECIMAL(10, 2))
+BEGIN
+    DECLARE CONTINUE HANDLER FOR SQLSTATE '45000'
+        SELECT '【处理器】捕获到自定义错误 45000' AS handle_msg;
+
+    IF v_salary < 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '薪水不能为负数';  -- 相当于 raise
+    END IF;
+    SELECT '校验通过' AS msg;
+END;
+
+CALL p_signal(-100);   -- 触发自定义错误，被处理器接住
+CALL p_signal(8000);   -- 校验通过
+# SQLSTATE '45000' 是留给用户自定义错误的通用值，不会和系统错误撞车，业务校验统一用它。
+
+-- 8. RESIGNAL：处理器处理完再把错误抛给上层（catch 里 rethrow）
+DROP PROCEDURE IF EXISTS p_inner;
+CREATE PROCEDURE p_inner()
+BEGIN
+    DECLARE CONTINUE HANDLER FOR 1062
+    BEGIN
+        SELECT '【内层】记日志：插入重复，转交给外层' AS log_msg;
+        RESIGNAL;                                     -- 重抛当前错误
+    END;
+
+    INSERT INTO emp_handler_demo VALUES (1, '重复甲', 9000);        -- 冲突 → 内层处理器
+    SELECT '内层后面的语句不会执行' AS msg;
+END;
+
+DROP PROCEDURE IF EXISTS p_outer;
+CREATE PROCEDURE p_outer()
+BEGIN
+    DECLARE CONTINUE HANDLER FOR 1062
+        SELECT '【外层】收到内层抛上来的 1062' AS handle_msg;
+
+    CALL p_inner();                                   -- 内层 RESIGNAL → 由外层这个处理器接住
+    SELECT '外层继续执行' AS msg;                      -- 外层是 CONTINUE，所以这句会执行
+END;
+
+CALL p_outer();
+# RESIGNAL 之后内层自己的 CONTINUE 就不作数了，控制权交回外层 CALL 之后；
+# 典型用法：底层只负责记录日志，最终怎么处理留给调用方决定。
+
+-- 9. 处理器的作用域：条件先在“出错那一层块”里找处理器，找不到才往外层找
+DROP PROCEDURE IF EXISTS p_scope;
+CREATE PROCEDURE p_scope()
+BEGIN
+    DECLARE CONTINUE HANDLER FOR SQLEXCEPTION                      -- 外层兜底：什么错都管
+        SELECT '【外层】兜底处理器' AS handle_msg;
+
+    inner_block: BEGIN
+        DECLARE CONTINUE HANDLER FOR 1062                          -- 内层：专门管主键冲突
+            SELECT '【内层】专门管主键冲突' AS handle_msg;
+
+        INSERT INTO emp_handler_demo VALUES (1, '重复甲', 9000);    -- 内外都能管 → 内层优先
+    END inner_block;
+
+    SELECT '程序继续执行到最后' AS msg;
+END;
+
+CALL p_scope();
+# 内层声明更具体的处理器，外层留一个兜底，这是最实用的结构。
+# 但同一个块里别写两个都可能命中的处理器 —— 谁生效不好维护，也容易踩坑。
+
+-- 10. 实战：批量导入，只跳过“重复主键”，其他错误照常抛出
+DROP TABLE IF EXISTS emp_import_demo;
+CREATE TABLE emp_import_demo (
+    id     INT PRIMARY KEY,
+    name   VARCHAR(50) NOT NULL,
+    salary DECIMAL(10, 2)
+);
+INSERT INTO emp_import_demo (id, name, salary) VALUES (2, '乙', 12000.00);   -- 先占个坑，等下会撞
+
+DROP PROCEDURE IF EXISTS p_import;
+CREATE PROCEDURE p_import()
+BEGIN
+    DECLARE v_i    INT DEFAULT 1;
+    DECLARE v_skip INT DEFAULT 0;                      -- 统计被跳过的条数
+    DECLARE CONTINUE HANDLER FOR 1062
+        SET v_skip := v_skip + 1;                      -- 只对主键冲突计数并继续，其他错误不管
+
+    ins_loop: LOOP
+        IF v_i > 5 THEN
+            LEAVE ins_loop;
+        END IF;
+        INSERT INTO emp_import_demo (id, name, salary)
+        VALUES (v_i, CONCAT('员工', v_i), 5000 + v_i * 1000);
+        SET v_i := v_i + 1;
+    END LOOP ins_loop;
+
+    SELECT v_skip AS `跳过的重复行`, (SELECT COUNT(*) FROM emp_import_demo) AS `表内总行数`;
+END;
+
+CALL p_import();   -- 跳过 1 行（id=2），表里 5 行
+# 这就是“只忽略我关心的那一种错误”的标准写法：
+# 条件写得越窄越安全；写成 SQLEXCEPTION 会把 name 为 NULL、字段超长这类真问题一起吞掉。
+# 注意：跳过的行不会撤销前面已插入的行，要整体可控得自己包事务 + ROLLBACK。
+
+-- 收尾：练习完清理
+DROP PROCEDURE IF EXISTS p_no_handler;
+DROP PROCEDURE IF EXISTS p_continue;
+DROP PROCEDURE IF EXISTS p_exit;
+DROP PROCEDURE IF EXISTS p_cond_name;
+DROP PROCEDURE IF EXISTS p_not_found;
+DROP PROCEDURE IF EXISTS p_diag;
+DROP PROCEDURE IF EXISTS p_signal;
+DROP PROCEDURE IF EXISTS p_inner;
+DROP PROCEDURE IF EXISTS p_outer;
+DROP PROCEDURE IF EXISTS p_scope;
+DROP PROCEDURE IF EXISTS p_import;
+DROP TABLE IF EXISTS emp_handler_demo;
+DROP TABLE IF EXISTS emp_import_demo;
+
+# HANDLER 踩坑清单：
+# 1. 声明顺序：变量/条件 → 游标 → 处理程序 → 可执行语句，写反报 1337。
+#    （前面游标那段注释里“处理程序的声明不能在游标之后”正好写反了，是必须在游标之后）
+# 2. 作用域是整个块 + 内层块，不可能只对某几条语句生效：
+#    声明了 CONTINUE HANDLER FOR NOT FOUND 之后，块里所有 SELECT ... INTO 查不到都会静默跳过。
+# 3. 处理器里不能用 LEAVE / ITERATE 去跳外层块的标签，报 1308 LEAVE with no matching label。
+#    想跳出 → 用 EXIT 处理器；想继续 → 在处理器里改一个标志变量，回到正常流程里判断。
+# 4. 三大类互斥：SQLEXCEPTION 不接 NOT FOUND、也不接 SQLWARNING，别以为能一把全接。
+# 5. 条件写太宽会吞真错误：SQLEXCEPTION 一把梭会把 NULL 违规、字段超长、表不存在全吃掉。
+# 6. CONTINUE 不撤销已做的事：同一事务里出错前的 INSERT 还在，该 ROLLBACK 自己写。
+# 7. 严格模式下很多“警告”会升级成错误（SQLSTATE 从 01 变成真错误），
+#    SQLWARNING 处理器就接不住了 —— 排错时先确认 sql_mode。
+# 8. 静默忽略某一类条件是合法写法：DECLARE CONTINUE HANDLER FOR SQLWARNING BEGIN END;
+#    空块 = 什么都不做，这类警告直接扔掉。
+# 9. 存进函数（FUNCTION）里别轻易吞错：函数是返回值的，吞掉的错误会变成“返回了个 NULL”，
+#    调用方很难发现，宁可让它报错。
+# 10. 处理器触发后诊断区仍有记录，排查问题时 SHOW WARNINGS / GET DIAGNOSTICS 能拿到原文。
