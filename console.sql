@@ -1236,3 +1236,335 @@ DROP TABLE IF EXISTS emp_import_demo;
 # 9. 存进函数（FUNCTION）里别轻易吞错：函数是返回值的，吞掉的错误会变成“返回了个 NULL”，
 #    调用方很难发现，宁可让它报错。
 # 10. 处理器触发后诊断区仍有记录，排查问题时 SHOW WARNINGS / GET DIAGNOSTICS 能拿到原文。
+
+# BEGIN...END 的作用：
+# 1. BEGIN...END 用来将多条 SQL 语句组合成一个代码块。
+# 2. BEGIN...END 可以嵌套，形成外层代码块和内层代码块。
+# 3. 存储过程主体本身通常就有一层 BEGIN...END。
+# 4. HANDLER 也可以使用 BEGIN...END 包裹多条处理语句。
+
+# EXIT HANDLER 的退出范围：
+# 1. EXIT HANDLER 执行自己的处理代码后，
+#    会退出 HANDLER 声明所在的 BEGIN...END 代码块。
+# 2. 不是退出 HANDLER 自己内部的 BEGIN...END。
+# 3. 如果 HANDLER 声明在存储过程最外层，
+#    通常意味着整个存储过程提前结束。
+# 4. 如果 HANDLER 声明在内层 BEGIN...END，
+#    则退出内层代码块，外层代码仍可继续执行。
+
+# ============================================HANDLER 条件类型============================================
+
+# 一、HANDLER 的六种条件指定方式：
+#
+# 1. MySQL 错误码：
+#    指定某一种具体的 MySQL 错误。
+#    例如：1062 表示主键或唯一索引重复。
+#
+# 2. SQLSTATE：
+#    使用 SQL 标准状态码指定处理条件，由 5 个字符组成。
+#    例如：'23000' 表示违反完整性约束。
+#
+# 3. condition_name：
+#    使用自定义条件名称指定处理条件。
+#    需要先通过 DECLARE CONDITION 声明条件名称。
+#    例如：DECLARE duplicate_error CONDITION FOR 1062;
+#         DECLARE CONTINUE HANDLER FOR duplicate_error ...
+#
+# 4. SQLWARNING：
+#    捕获警告类条件，对应 SQLSTATE 以 '01' 开头的状态。
+#
+# 5. NOT FOUND：
+#    捕获没有找到数据的条件，对应 SQLSTATE 以 '02' 开头的状态。
+#    常用于游标 FETCH 读取完毕时的结束处理。
+#
+# 6. SQLEXCEPTION：
+#    捕获普通 SQL 异常，对应不属于成功、警告、无数据类别的异常条件。
+#
+# 二、SQLSTATE 状态码分类：
+#
+# SQLSTATE 以 5 个字符组成，前两位表示条件类别：
+#
+# '00'：成功（SUCCESS）
+#       表示 SQL 执行成功，不作为错误处理条件。
+#
+# '01'：警告（WARNING）
+#       对应 SQLWARNING。
+#
+# '02'：没有找到数据（NOT FOUND）
+#       对应 NOT FOUND。
+#
+# 其他类别：异常（EXCEPTION）
+#           对应 SQLEXCEPTION。
+#
+# 三、重点区别：
+#
+# 1. MySQL 错误码：针对具体的 MySQL 错误，例如 1062。
+# 2. SQLSTATE：使用标准状态码识别条件，例如 '23000'。
+# 3. condition_name：给错误码或 SQLSTATE 起一个有意义的名称。
+# 4. SQLWARNING、NOT FOUND、SQLEXCEPTION：属于通用条件类别。
+#
+# 注意：
+# SQLEXCEPTION 并不是所有错误和警告的统称，
+# 它不包括 SQLSTATE 以 '00'、'01'、'02' 开头的条件。
+
+# ============================================存储函数（FUNCTION）===========================================
+USE lyt;
+
+# 存储函数和存储过程是一对兄弟，都是“把一段 SQL 逻辑存进数据库，起个名字反复调用”：
+#   存储过程 PROCEDURE：没有返回值，用 CALL 调用，一整条语句跑完就结束
+#   存储函数 FUNCTION ：必须有且只有一个返回值，能当“值”用 —— 可以塞进 SELECT、WHERE、ORDER BY 里
+#
+# 一句话记住区别：
+#   过程是“做事”，函数是“算值”。
+#   过程用 CALL 单独执行；函数写在表达式里，和 NOW()、CONCAT() 这些内置函数一个位置。
+#
+# 语法结构：
+# CREATE FUNCTION 函数名(参数列表)
+# RETURNS 返回类型
+#     [characteristics]
+# BEGIN
+#     ...
+#     RETURN 值;          -- 必须有 RETURN，函数靠它把结果交出去
+# END;
+#
+# characteristics（特征声明，写在 RETURNS 之后、BEGIN 之前）：
+#   DETERMINISTIC       同样的输入一定得到同样的输出（纯计算，不读不写表）
+#   NO SQL              函数体里完全没有 SQL 语句
+#   READS SQL DATA      函数体里只查数据（SELECT），不修改数据
+#   MODIFIES SQL DATA   函数体里会修改数据（INSERT/UPDATE/DELETE）
+#   CONTAINS SQL        默认值，函数体里有 SQL 但没说明类型
+#   SQL SECURITY DEFINER / INVOKER   以创建者 / 调用者的权限执行
+#
+# 为什么必须写 DETERMINISTIC / NO SQL / READS SQL DATA 这三个之一：
+#   只要开了 binlog（MySQL 8.0 默认开），创建函数时不做这个声明就会直接报错：
+#   ERROR 1418: This function has none of DETERMINISTIC, NO SQL, or READS SQL DATA ...
+#   原因是主从复制要靠这三者判断“函数在主库和从库执行结果是否一致”。
+#   三种解法：声明特征（推荐）/ SET GLOBAL log_bin_trust_function_creators = 1 / 关 binlog（别这么干）。
+
+-- 1. 最简单的函数：纯计算，不碰表
+DROP FUNCTION IF EXISTS f_annual_salary;
+CREATE FUNCTION f_annual_salary(
+    p_salary  DECIMAL(10, 2),   -- 月薪
+    p_months  INT               -- 发几个月
+)
+RETURNS DECIMAL(12, 2)          -- 返回值类型必须声明，而且只能有一个返回值
+    DETERMINISTIC               -- 同样输入必然同样输出，纯算数，所以要声明
+    NO SQL                      -- 函数体里一句 SQL 都没有
+BEGIN
+    IF p_salary IS NULL OR p_months IS NULL THEN
+        RETURN NULL;            -- 入参为空直接返回 NULL，别让后面的乘法算出莫名其妙的值
+    END IF;
+    RETURN p_salary * p_months; -- RETURN 执行后函数立即结束，后面的语句不会再跑
+END;
+
+-- 调用：SELECT 里当普通函数用
+SELECT f_annual_salary(8000, 13) AS `年薪（13薪）`;
+SELECT f_annual_salary(NULL, 12) AS `入参为 NULL 的结果`;   -- NULL
+
+-- 也能直接用在查询的列上：每行调用一次
+SELECT id, name, salary,
+       f_annual_salary(salary, 13) AS `年薪`
+FROM employee
+WHERE id <= 5;
+
+# 注意：函数写在 SELECT 列表里，是“逐行调用”——返回 1496 行就执行 1496 次。
+# 简单的算术还好，一旦函数体里带 SELECT 查表，性能会断崖式下跌，能写成 JOIN 就别用函数。
+
+-- 2. 带条件判断的函数：成绩分级
+DROP FUNCTION IF EXISTS f_grade;
+CREATE FUNCTION f_grade(p_score INT)
+RETURNS VARCHAR(10)
+    DETERMINISTIC
+    NO SQL
+BEGIN
+    DECLARE v_result VARCHAR(10);
+    IF p_score IS NULL THEN
+        SET v_result := '无成绩';
+    ELSEIF p_score >= 90 THEN
+        SET v_result := '优秀';
+    ELSEIF p_score >= 75 THEN
+        SET v_result := '良好';
+    ELSEIF p_score >= 60 THEN
+        SET v_result := '及格';
+    ELSE
+        SET v_result := '不及格';
+    END IF;
+    RETURN v_result;            -- 函数里每个分支最终都要能 RETURN 到，否则会报“函数没有返回值”
+END;
+
+SELECT f_grade(95), f_grade(80), f_grade(60), f_grade(30), f_grade(NULL);
+
+# 和 CASE 表达式对比一下：同样的分级逻辑，CASE 写在一句 SQL 里更省事；
+# 函数的价值在于“一次写好，到处复用”——多个报表都要分级时不用重复抄 CASE。
+
+-- 3. 要查表的函数：必须声明 READS SQL DATA
+DROP FUNCTION IF EXISTS f_dept_name;
+CREATE FUNCTION f_dept_name(p_dept_id INT)
+RETURNS VARCHAR(50)
+    READS SQL DATA              -- 函数体里要 SELECT 查表 → 声明只读
+    DETERMINISTIC               -- 同样的 id 查出来的部门名是固定的，可以算确定
+BEGIN
+    DECLARE v_name VARCHAR(50) DEFAULT NULL;
+    DECLARE CONTINUE HANDLER FOR NOT FOUND
+        SET v_name := '未知部门';   -- 查不到时给个默认值，而不是让整个查询报 1329 中断
+
+    SELECT dept_name INTO v_name       -- 函数里查单个值只能用 SELECT ... INTO，不能直接返回结果集
+    FROM department
+    WHERE dept_id = p_dept_id
+    LIMIT 1;                           -- INTO 只能接一行，加 LIMIT 防止多行报错
+
+    RETURN IFNULL(v_name, '未知部门');  -- 查到 NULL 也兜一下
+END;
+
+SELECT f_dept_name(1) AS `部门1`, f_dept_name(9999) AS `不存在的部门`;
+
+SELECT e.id, e.name, e.dept_id, f_dept_name(e.dept_id) AS `部门名`
+FROM employee e
+WHERE e.id <= 5;
+
+# 这里能看到函数的短板：SELECT 里 5 行就要查 5 次 department 表。
+# 换成 JOIN 只需要一次关联查询 —— 所以“查表类函数”只适合小结果集或单次调用，别在大查询里用。
+
+-- 4. 函数的实际用法一：写进 WHERE / ORDER BY / HAVING
+SELECT id, name, salary
+FROM employee
+WHERE f_annual_salary(salary, 12) > 240000    -- 函数放在 WHERE 里 → 索引必然失效，全表扫
+ORDER BY f_annual_salary(salary, 12) DESC     -- ORDER BY 里用函数：没有索引能用，必然 filesort
+LIMIT 10;
+# 记住：WHERE 里出现函数，等于在列上做运算，本来能走的索引全部作废。
+# 能写成 `salary > 20000` 就别写成 `f_annual_salary(salary, 12) > 240000`。
+
+-- 5. 函数用在 UPDATE / INSERT 里
+DROP TABLE IF EXISTS emp_func_demo;
+CREATE TABLE emp_func_demo (
+    id        INT PRIMARY KEY,
+    name      VARCHAR(50),
+    score     INT,
+    grade     VARCHAR(10)
+);
+INSERT INTO emp_func_demo (id, name, score) VALUES (1, '甲', 92), (2, '乙', 78), (3, '丙', 55);
+
+UPDATE emp_func_demo SET grade = f_grade(score);   -- 每行的 score 各自过一遍函数
+SELECT * FROM emp_func_demo;
+
+DROP TABLE IF EXISTS emp_func_demo;
+
+-- 6. 递归：函数不能递归！递归只能用存储过程
+# 先记住这条硬限制（官方原文：Stored functions cannot be used recursively.）：
+#   存储函数  不能调用自己，也不能 A 调 B、B 再调回 A 这种间接递归 → 报 1424
+#   触发器    同样不允许递归
+#   存储过程  允许递归，但要用 max_sp_recursion_depth 放开深度（默认 0 = 禁止）
+#   所以 max_sp_recursion_depth 这个名字里的 sp 就是 stored procedure —— 只对过程生效。
+#
+# 下面这段是“故意报错”的示范，理解限制即可，不要真跑：
+# CREATE FUNCTION f_fact(p_n INT) RETURNS BIGINT DETERMINISTIC NO SQL
+# BEGIN
+#     IF p_n <= 1 THEN RETURN 1;
+#     ELSE RETURN p_n * f_fact(p_n - 1);   -- 函数调自己 → ERROR 1424: Recursive stored functions and triggers are not allowed
+#     END IF;
+# END;
+# 改 max_sp_recursion_depth 也没用，那是给过程用的，函数的递归是“根本不让你写”。
+
+-- 正确做法：用存储过程实现递归阶乘
+SET SESSION max_sp_recursion_depth = 10;   -- 放开过程递归深度，默认 0 = 一递归就报 1456
+
+DROP PROCEDURE IF EXISTS p_fact;
+CREATE PROCEDURE p_fact(IN p_n INT, OUT p_result BIGINT)
+BEGIN
+    IF p_n IS NULL OR p_n < 0 THEN
+        SET p_result := NULL;
+    ELSEIF p_n <= 1 THEN
+        SET p_result := 1;                        -- 递归出口：一定要写，漏了就撞深度上限
+    ELSE
+        CALL p_fact(p_n - 1, p_result);           -- 过程调用自己
+        SET p_result := p_result * p_n;
+    END IF;
+END;
+
+CALL p_fact(5, @f5);
+CALL p_fact(10, @f10);
+SELECT @f5 AS `5的阶乘`, @f10 AS `10的阶乘`;   -- 120 / 3628800
+DROP PROCEDURE IF EXISTS p_fact;
+
+# 递归深度演示：depth 设成 3，算 5 的阶乘会超过层数 → 报 1456 Recursive limit exceeded
+# SET SESSION max_sp_recursion_depth = 3;
+# CALL p_fact(5, @r);   -- 1456
+# SET SESSION max_sp_recursion_depth = 10;
+
+# 实用建议：阶乘、树形结构向上找父节点这类需求，MySQL 8.0 优先用递归 CTE（WITH RECURSIVE），
+# 不用写存储过程，还能直接参与 JOIN，比过程递归好用得多：
+# WITH RECURSIVE seq(n, f) AS (
+#     SELECT 1, 1
+#     UNION ALL
+#     SELECT n + 1, f * (n + 1) FROM seq WHERE n < 10
+# )
+# SELECT f AS `10的阶乘` FROM seq WHERE n = 10;
+
+-- 7. 查看、删除函数
+SHOW FUNCTION STATUS WHERE Db = 'lyt';                       -- 列出当前库所有函数
+SHOW CREATE FUNCTION f_annual_salary;                        -- 看函数的完整定义
+SELECT ROUTINE_NAME, ROUTINE_TYPE, DTD_IDENTIFIER            -- DTD_IDENTIFIER 就是返回类型
+FROM information_schema.ROUTINES
+WHERE ROUTINE_SCHEMA = 'lyt'
+  AND ROUTINE_TYPE = 'FUNCTION';
+
+DROP FUNCTION IF EXISTS f_grade;
+DROP FUNCTION IF EXISTS f_dept_name;
+DROP FUNCTION IF EXISTS f_annual_salary;
+# DROP FUNCTION 只删函数；DROP PROCEDURE 只删过程，两者不会互相影响（同名也不冲突）
+
+# ====================函数里那些“做不到”的事（都是硬限制）====================
+# 下面几条都是故意报错，理解限制即可，不需要真跑
+
+# 1. 不能返回结果集
+#    CREATE FUNCTION f_bad() RETURNS INT DETERMINISTIC
+#    BEGIN
+#        SELECT * FROM employee;   -- 报错 1415：Not allowed to return a result set from a function
+#        RETURN 1;
+#    END;
+#    函数只能 RETURN 一个标量值。要返回多行多列 → 用存储过程。
+
+# 2. 参数只能是 IN
+#    CREATE FUNCTION f_bad2(INOUT x INT) RETURNS INT ...   -- 语法错误
+#    OUT / INOUT 是过程的专利，函数天生只有一个出口：RETURN。
+
+# 3. 不能用动态 SQL
+#    SET @s = 'SELECT 1'; PREPARE stmt FROM @s;   -- 报错 1336：Dynamic SQL is not allowed in stored function or trigger
+
+# 4. 不能控制事务
+#    COMMIT; / ROLLBACK; 出现在函数体里 → 报错
+#    事务控制属于调用方，函数只负责算值。
+
+# 5. 不写特征声明 + 开了 binlog → 1418（前面讲过了）
+
+# 6. 不能递归（最容易踩，因为语法上看着完全没问题）
+#    RETURN p_n * f_fact(p_n - 1);   -- 报错 1424：Recursive stored functions and triggers are not allowed
+#    官方原文：Stored functions cannot be used recursively.
+#    注意：这不是“深度设小了点”，而是“根本不允许”。max_sp_recursion_depth 只对存储过程有效，
+#    改它没有任何用。需要递归 → 用存储过程，或者用递归 CTE（WITH RECURSIVE）。
+
+# 函数踩坑清单：
+# 1. 每条执行路径都必须能 RETURN 到。IF 分支漏了 ELSE、循环外没有兜底 RETURN，都会报“函数没有返回值”。
+# 2. 声明 DETERMINISTIC 就要真的确定。函数里用了 NOW()、RAND()、UUID() 还标 DETERMINISTIC，
+#    主从复制会数据不一致 —— 这种该标 NOT DETERMINISTIC 或不标，并另想办法（真实场景尽量避免）。
+# 3. SELECT ... INTO 一定要配 NOT FOUND 处理器 + LIMIT 1：查不到会报 1329，查到多行会报 1172。
+# 4. 函数的参数名别和表里的列名重名（比如参数叫 salary、表里也有 salary），
+#    MySQL 会优先当成列名，条件静默失效 —— 这是最难查的坑。参数统一加 p_ 前缀最稳。
+# 5. 别在函数里改数据（INSERT/UPDATE/DELETE）。函数常被用在 SELECT 里，一旦有副作用，
+#    同一条 SELECT 跑两次结果可能都不一样，还可能锁表。真要改数据用存储过程。
+# 6. 函数在 SELECT 里是逐行执行的，能不能用 JOIN / CASE 平替，先想想。
+# 7. WHERE 里用函数 = 索引失效，这是最常见的性能事故。
+# 8. 函数不能递归（1424），触发器同样不能递归；只有存储过程可以，且要设 max_sp_recursion_depth。
+# 9. 函数属于某个库，跨库调用要写全名：SELECT lyt.f_grade(90);
+# 10. 命令行客户端创建函数同样要先 DELIMITER $$，否则函数体里的分号会把语句截断。
+# 11. 删除重建函数不会清掉已有权限，但函数改名等于新对象，需要重新授权。
+
+# 函数特性	             主要作用
+# DETERMINISTIC	声明函数是否具有确定性
+# CONTAINS SQL	声明函数包含 SQL 语句，但不读写数据
+# NO SQL	        声明函数不包含 SQL 数据访问语句
+# READS SQL DATA	声明函数读取数据库数据
+# MODIFIES SQL DATA	声明函数可能修改数据库数据
+# SQL SECURITY	指定函数使用谁的权限执行
+# COMMENT	        给函数添加描述信息
+# LANGUAGE SQL	声明函数使用的语言
