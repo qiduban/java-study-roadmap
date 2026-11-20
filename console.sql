@@ -1568,3 +1568,446 @@ DROP FUNCTION IF EXISTS f_annual_salary;
 # SQL SECURITY	指定函数使用谁的权限执行
 # COMMENT	        给函数添加描述信息
 # LANGUAGE SQL	声明函数使用的语言
+
+# =======================================================触发器======================================================
+USE lyt;
+
+-- insert型触发器
+DROP TABLE IF EXISTS emp_trigger_demo; -- 前置测试条件准备（名字要和下面 CREATE 的完全一致）
+DROP TABLE IF EXISTS emp_trigger_log;
+
+CREATE TABLE emp_trigger_demo(
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    name varchar(255) NOT NULL,
+    salary DECIMAL(10,2) DEFAULT 0,   -- 原来是 DEFAULT -1，和下面“工资不能<0”的校验直接打架：
+                                      -- 不写 salary 时取默认值 -1，触发器立刻报错，等于这张表永远插不进只给名字的行
+    createtime DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE = InnoDB;
+
+CREATE TABLE emp_trigger_log(
+    log_id INT PRIMARY KEY AUTO_INCREMENT,
+    emp_id INT,
+    OPERATION_type VARCHAR(20),
+    old_salary DECIMAL(10,2),
+    new_salary DECIMAL(10,2),
+    detail VARCHAR(255),
+    operation_time DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE = InnoDB;
+
+-- 开始创建插入前触发器，检查插入内容是否合规
+
+DROP TRIGGER IF EXISTS t_emp_before_insert;
+
+CREATE TRIGGER t_emp_before_insert
+    BEFORE INSERT ON emp_trigger_demo
+    FOR EACH ROW
+    BEGIN
+        -- 检查姓名
+        -- 坑：NEW.name = NULL 永远不成立（NULL 比较结果是 UNKNOWN，不是 TRUE），必须写 IS NULL
+        IF NEW.name IS NULL OR TRIM(NEW.name) = '' THEN
+        signal sqlstate '45000'
+            set message_text = '员工姓名不能为空';
+        end if;
+        -- 检查工资
+        IF NEW.salary < 0 THEN
+            SIGNAL SQLSTATE '45000'
+                SET MESSAGE_TEXT = '员工工资不能小于0';
+        end if;
+        -- 自动去除名字的前后空格（BEFORE 触发器里 SET NEW.列 才能改到真正落库的值）
+        set NEW.name = trim(NEW.name);
+    end;
+
+-- AFTER 触发器要和 BEFORE 触发器挂在同一张表上，否则日志表永远是空的
+DROP TRIGGER IF EXISTS t_employee_after_insert;   -- 忘了这句，第二次执行就报 1359 Trigger already exists
+
+CREATE TRIGGER t_employee_after_insert
+    AFTER INSERT ON emp_trigger_demo     -- 原来写的是 ON employee：测试往 demo 表插数据，这个触发器根本不会触发
+        FOR EACH ROW
+    BEGIN
+        INSERT INTO emp_trigger_log(
+                emp_id,
+                operation_type,
+                old_salary,
+                new_salary,
+                detail
+            ) VALUES (
+                new.id,
+                'INSERT',                    -- 原来是 'INERT'，少个 S，不报错但日志里全是错别字
+                NULL,
+                NEW.salary,
+                CONCAT('新增员工：', NEW.name)
+                );
+    end;
+
+-- 测试 1：正常插入（不写 id，交给 AUTO_INCREMENT，重复执行也不会撞主键）
+INSERT INTO emp_trigger_demo (name, salary) VALUES ('  WMS  ', 12345.67);
+SELECT id, CONCAT('[', name, ']') AS `名字是否已去空格`, salary FROM emp_trigger_demo;
+SELECT * FROM emp_trigger_log;   -- 应该有一条：INSERT / 12345.67 / 新增员工：WMS
+
+-- 测试 2：空名字被拦住
+# INSERT INTO emp_trigger_demo (name, salary) VALUES ('   ', 100);      -- ERROR 1644: 员工姓名不能为空
+-- 测试 3：负工资被拦住
+# INSERT INTO emp_trigger_demo (name, salary) VALUES ('张三', -100);    -- ERROR 1644: 员工工资不能小于0
+
+# 这一套原来跑不通的四个原因：
+# 1. DROP 的是 emp_trigger_demo，CREATE 的是 emp_triggter_demo —— 名字对不上，重复执行必报 1050 表已存在。
+# 2. NEW.name = NULL 永远不成立，空值其实没被校验到（这次没出事只是因为 name 列是 NOT NULL，数据库自己拦了）。
+# 3. AFTER 触发器挂在 employee 上，测试却往 emp_trigger_demo 插 —— 日志表一条都不会有，
+#    SELECT * FROM emp_trigger_log 是空结果，看着像“触发器没生效”，其实是挂错表了。
+# 4. salary DEFAULT -1 和“工资不能<0”互斥：只插名字时取默认 -1，必然报错。
+#    另外 'INERT' 拼错、缺 DROP TRIGGER IF EXISTS，都属于不报错但要命的小地方。
+
+-- 收尾：练习完清理
+DROP TRIGGER IF EXISTS t_emp_before_insert;
+DROP TRIGGER IF EXISTS t_employee_after_insert;
+DROP TABLE IF EXISTS emp_trigger_demo;
+DROP TABLE IF EXISTS emp_trigger_log;
+
+-- 查看触发器
+# SHOW TRIGGERS FROM lyt;
+# SELECT TRIGGER_NAME, EVENT_MANIPULATION, ACTION_TIMING, EVENT_OBJECT_TABLE
+# FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = 'lyt';
+
+# ============================================UPDATE 型触发器===========================================
+USE lyt;
+
+# UPDATE 触发器最大的特点：OLD 和 NEW 同时可用
+#   OLD.列   改之前的值（数据原来的样子，只读）
+#   NEW.列   改之后的值（即将写入/已经写入的样子）
+# 对比一下：
+#   INSERT 触发器：只有 NEW（没有旧行）
+#   DELETE 触发器：只有 OLD（没有新行）
+#   UPDATE 触发器：OLD + NEW 都有，所以能把“改前 → 改后”完整记下来
+#
+# BEFORE UPDATE 和 AFTER UPDATE 的分工：
+#   BEFORE UPDATE  能校验（不合法就 SIGNAL 拒绝），也能用 SET NEW.列 改写即将落库的值
+#   AFTER  UPDATE  数据已经写进去了，只能读 OLD/NEW 用来记日志、同步其他表
+#
+# 一个重要前提：触发器必须挂在“已经存在的表”上。
+# 上面那段收尾已经把 emp_trigger_demo / emp_trigger_log 都 DROP 了，
+# 此时直接 CREATE TRIGGER ... ON emp_trigger_demo 会报 1146 Table doesn't exist。
+# 所以下面先重建表，再建触发器。
+
+-- 1. 重建练习用的两张表
+DROP TABLE IF EXISTS emp_trigger_demo;
+DROP TABLE IF EXISTS emp_trigger_log;
+
+CREATE TABLE emp_trigger_demo(
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    name varchar(255) NOT NULL,
+    salary DECIMAL(10,2) DEFAULT 0,
+    createtime DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE = InnoDB;
+
+CREATE TABLE emp_trigger_log(
+    log_id INT PRIMARY KEY AUTO_INCREMENT,
+    emp_id INT,
+    OPERATION_type VARCHAR(20),
+    old_salary DECIMAL(10,2),
+    new_salary DECIMAL(10,2),
+    detail VARCHAR(255),
+    operation_time DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE = InnoDB;
+
+-- 2. 先造数据，再建触发器 —— 顺序很重要
+# 如果反了（先建触发器再插初始数据），这几条初始 INSERT 也会被日志记下来，
+# 日志里就分不清哪些是插入、哪些是修改了。练习时先插数据更清爽。
+INSERT INTO emp_trigger_demo (name, salary) VALUES
+    ('张三', 8000.00),
+    ('李四', 12000.00),
+    ('王五', 5000.00);
+SELECT * FROM emp_trigger_demo;
+
+-- 3. 建 UPDATE 触发器
+DROP TRIGGER IF EXISTS t_emp_after_update;
+CREATE TRIGGER t_emp_after_update
+    AFTER UPDATE ON emp_trigger_demo
+    FOR EACH ROW
+BEGIN
+    # 你原来的写法有两个会直接报错的点，这里改掉了：
+    #   (1) 列清单写了 5 列，VALUES 里却给了 6 个值（多了一个 CURRENT_TIMESTAMP）
+    #       → 报 1136 Column count doesn't match value count at row 1
+    #       operation_time 有 DEFAULT CURRENT_TIMESTAMP，本来就不用传
+    #   (2) 这一段执行时 emp_trigger_demo 已经被 DROP 了 → 报 1146 Table doesn't exist
+    INSERT INTO emp_trigger_log (emp_id, operation_type, old_salary, new_salary, detail)
+    VALUES (
+        NEW.id,                                                            -- 主键没变，NEW.id 和 OLD.id 是同一个值
+        'UPDATE',                                                          -- 建议统一大写，方便以后按 operation_type 统计
+        OLD.salary,                                                        -- 改之前的薪水
+        NEW.salary,                                                        -- 改之后的薪水
+        CONCAT(OLD.name, ' 的薪水由 ', OLD.salary, ' 调整为 ', NEW.salary)   -- 改前改后拼成一句人话
+    );
+END;
+
+-- 4. 测试一：改一个人的薪水 → 日志多一条
+UPDATE emp_trigger_demo SET salary = 9000.00 WHERE name = '张三';
+SELECT * FROM emp_trigger_log;
+# 结果：1 条，old_salary=8000.00，new_salary=9000.00
+#       detail = 张三 的薪水由 8000.00 调整为 9000.00
+
+-- 5. 测试二：一次 UPDATE 影响多行 → 触发器逐行执行，记多条
+UPDATE emp_trigger_demo SET salary = salary * 1.1;
+SELECT log_id, emp_id, operation_type, old_salary, new_salary, detail
+FROM emp_trigger_log ORDER BY log_id;
+# 结果：又多 3 条（张三 9000→9900、李四 12000→13200、王五 5000→5500）
+# 这就是 FOR EACH ROW 的含义：影响 3 行，触发器就跑 3 次
+# 反过来说，10 万行的批量 UPDATE 会跑 10 万次触发器，性能要提前掂量
+
+-- 6. 测试三：值没变也会触发（新手最容易意外的行为）
+UPDATE emp_trigger_demo SET salary = salary WHERE name = '李四';
+SELECT COUNT(*) AS `日志总条数` FROM emp_trigger_log;
+# 结果：又多一条，而且 old_salary 和 new_salary 一模一样
+# 原因：MySQL 触发器只认“事件发生了”，不判断“值有没有变”。
+#       只要 UPDATE 匹配到了这一行，就触发一次。
+# 想只记录真正发生变化的行，要么在触发器里加判断（见下面第 7 步），
+# 要么在外面写 UPDATE ... WHERE salary <> 新值 来收窄范围。
+
+-- 7. 测试四：只改名字，salary 没动
+UPDATE emp_trigger_demo SET name = '张三丰' WHERE id = 1;
+SELECT * FROM emp_trigger_log ORDER BY log_id DESC LIMIT 1;
+# 结果：照样记一条，old_salary = new_salary = 9900.00
+# 说明触发器只认“表被 UPDATE 了”，不认“哪个列被改了”。
+# 要精确追踪某个字段，就得在触发器里逐列比较：
+#   IF NOT (OLD.name <=> NEW.name) THEN ... 记一条“改名”...
+#   IF NOT (OLD.salary <=> NEW.salary) THEN ... 记一条“调薪”...
+
+-- 8. 优化版：只有薪水真变了才记日志
+#   <=> 是 NULL 安全的等于：NULL <=> NULL 为真，NULL <=> 9000 为假。
+#   用 <> 或 != 的话，NULL 参与比较结果是 UNKNOWN，会漏掉情况。
+DROP TRIGGER IF EXISTS t_emp_after_update;
+CREATE TRIGGER t_emp_after_update
+    AFTER UPDATE ON emp_trigger_demo
+    FOR EACH ROW
+BEGIN
+    IF NOT (OLD.salary <=> NEW.salary) THEN
+        INSERT INTO emp_trigger_log (emp_id, operation_type, old_salary, new_salary, detail)
+        VALUES (
+            NEW.id,
+            'UPDATE',
+            OLD.salary,
+            NEW.salary,
+            CONCAT(OLD.name, ' 的薪水由 ', OLD.salary, ' 调整为 ', NEW.salary)
+        );
+    END IF;
+END;
+
+-- 验证优化效果：跑一次“值不变”的 UPDATE，日志条数应该不再增长
+SELECT COUNT(*) AS `改动前条数` FROM emp_trigger_log;
+UPDATE emp_trigger_demo SET salary = salary;                 -- 值没变 → 不记日志
+SELECT COUNT(*) AS `值不变的UPDATE后` FROM emp_trigger_log;   -- 条数不变
+UPDATE emp_trigger_demo SET salary = 10000 WHERE name = '王五'; -- 值变了 → 记一条
+SELECT COUNT(*) AS `值真变了之后` FROM emp_trigger_log;        -- 条数 +1
+
+-- 9. 配套：BEFORE UPDATE 做校验（可选，演示分工）
+# 校验放 BEFORE，日志放 AFTER —— 这是最标准的组合：
+# BEFORE 能拦下非法数据，AFTER 才记录“已经成功落库”的变更。
+DROP TRIGGER IF EXISTS t_emp_before_update;
+CREATE TRIGGER t_emp_before_update
+    BEFORE UPDATE ON emp_trigger_demo
+    FOR EACH ROW
+BEGIN
+    IF NEW.salary < 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = '工资不能小于 0';
+    END IF;
+    SET NEW.name = TRIM(NEW.name);   -- BEFORE 才能改到即将落库的值
+END;
+
+-- 测试五：非法薪水被拦住
+# UPDATE emp_trigger_demo SET salary = -100 WHERE name = '李四';   -- ERROR 1644: 工资不能小于 0
+
+-- 测试六：改名字时自动去空格
+UPDATE emp_trigger_demo SET name = '  赵六  ' WHERE id = 3;
+SELECT id, CONCAT('[', name, ']') AS `名字是否已去空格` FROM emp_trigger_demo WHERE id = 3;
+# 结果：[赵六]
+
+-- 10. 完整看一遍三张视图
+SELECT * FROM emp_trigger_demo;                              -- 当前数据
+SELECT * FROM emp_trigger_log ORDER BY log_id;                -- 变更历史
+SELECT TRIGGER_NAME, EVENT_MANIPULATION, ACTION_TIMING, EVENT_OBJECT_TABLE
+FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = 'lyt'; -- 这个库里到底挂了哪些触发器
+
+-- 收尾：练习完清理
+DROP TRIGGER IF EXISTS t_emp_before_update;
+DROP TRIGGER IF EXISTS t_emp_after_update;
+DROP TABLE IF EXISTS emp_trigger_demo;
+DROP TABLE IF EXISTS emp_trigger_log;
+
+# UPDATE 触发器踩坑清单：
+# 1. 触发器必须建在已存在的表上，先 DROP TABLE 再 CREATE TRIGGER 会报 1146。
+# 2. INSERT 的列清单和 VALUES 个数必须一致，多给一个值就报 1136（你原来的写法就是这个）。
+# 3. 值没变也会触发：触发器只认事件，不认变化。要去重请在触发器里用 <=> 判断。
+# 4. 判断“有没有变”用 <=> 别用 <>：<> 遇到 NULL 返回 UNKNOWN，会静默漏判。
+# 5. 一次多行 UPDATE，触发器逐行跑；批量操作前先想想性能。
+# 6. BEFORE 里 SET NEW.列 才生效，AFTER 里改 NEW 无效（数据已经落库了）。
+# 7. AFTER 触发器里不能对“正在被更新的那张表”再 UPDATE/INSERT，会报 1442；日志写别的表。
+# 8. OLD 是只读的，任何 SET OLD.列 都会报错。
+# 9. 主键被 UPDATE 改动时，NEW.id 是新值、OLD.id 是旧值，日志里记哪个要想清楚。
+# 10. 触发器对应用层是隐形的，排错时先 SHOW TRIGGERS 看有没有“看不见的手”在改数据。
+
+# ============================================DELETE 型触发器===========================================
+USE lyt;
+
+# DELETE 触发器和 INSERT 正好相反：只有 OLD，没有 NEW。
+#   INSERT 触发器：只有 NEW（新行还没落库 / 刚落库）
+#   UPDATE 触发器：OLD + NEW 都有（改前 → 改后）
+#   DELETE 触发器：只有 OLD（被删掉的那一行，删完就没了）
+# 为什么没有 NEW？因为删除之后没有“新行”这个东西。写 NEW.xxx 会直接报
+#   ERROR 1363: There is no NEW row in the trigger
+#
+# BEFORE DELETE 和 AFTER DELETE 的分工（这里和 UPDATE 很不一样）：
+#   BEFORE DELETE  还能拦住删除：SIGNAL 抛错 → 这条 DELETE 失败，行不会被删
+#   AFTER  DELETE  行已经删掉了，只能“事后记录”，没法反悔
+#
+# 最常见的用途：把删掉的数据记到日志/归档表里，相当于软删除的兜底证据。
+# 注意：AFTER DELETE 只是“记了一笔”，数据本身是真的没了。
+# 想真能还原，就得把整行字段都存进归档表（下面第 8 步演示）。
+
+-- 1. 重建练习用的两张表（上面收尾已经 DROP 过，不重建会报 1146 Table doesn't exist）
+DROP TABLE IF EXISTS emp_trigger_demo;
+DROP TABLE IF EXISTS emp_trigger_log;
+
+CREATE TABLE emp_trigger_demo(
+    id INT PRIMARY KEY AUTO_INCREMENT,
+    name varchar(255) NOT NULL,
+    salary DECIMAL(10,2) DEFAULT 0,
+    createtime DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE = InnoDB;
+
+CREATE TABLE emp_trigger_log(
+    log_id INT PRIMARY KEY AUTO_INCREMENT,
+    emp_id INT,
+    OPERATION_type VARCHAR(20),
+    old_salary DECIMAL(10,2),
+    new_salary DECIMAL(10,2),
+    detail VARCHAR(255),
+    operation_time DATETIME DEFAULT CURRENT_TIMESTAMP
+) ENGINE = InnoDB;
+
+-- 2. 先造数据，再建触发器
+INSERT INTO emp_trigger_demo (name, salary) VALUES
+    ('张三', 8000.00),
+    ('李四', 12000.00),
+    ('王五', 5000.00),
+    ('赵六', 9000.00);
+SELECT * FROM emp_trigger_demo;
+
+-- 3. 建 DELETE 触发器
+DROP TRIGGER IF EXISTS t_emp_after_delete;
+CREATE TRIGGER t_emp_after_delete
+    AFTER DELETE ON emp_trigger_demo
+    FOR EACH ROW
+BEGIN
+    # 你原来的写法有三处要改（下面都修掉了）：
+    #   (1) operation_type 写的是 'UPDATE' —— 从 UPDATE 触发器复制过来忘了改，
+    #       不报错，但日志里所有删除记录都显示成“修改”，以后按类型统计就是错的。
+    #   (2) 这段接在“收尾：练习完清理”之后，那时 emp_trigger_demo 已被 DROP，
+    #       执行到这里会报 1146 Table doesn't exist。
+    #   (3) 没有测试语句，触发器建完了也不知道到底灵不灵。
+    #
+    # 写对了的地方：用 OLD 而不是 NEW（DELETE 里写 NEW 会报 1363）、
+    #               4 列对 4 值（不像 UPDATE 那段多给了一个 CURRENT_TIMESTAMP）、
+    #               operation_time 靠默认值自动填 —— 这些都保留。
+    INSERT INTO emp_trigger_log (emp_id, operation_type, old_salary, detail)
+    VALUES (
+        OLD.id,                                                   -- 被删掉那行的主键
+        'DELETE',                                                 -- 别忘了改：DELETE 事件记 'DELETE'
+        OLD.salary,                                               -- 删除前的薪水，留个底
+        CONCAT('删除员工：id=', OLD.id, '，姓名=', OLD.name, '，薪水=', OLD.salary)
+    );
+END;
+
+-- 4. 测试一：删一行 → 日志多一条
+DELETE FROM emp_trigger_demo WHERE name = '张三';
+SELECT * FROM emp_trigger_demo;            -- 只剩 3 行
+SELECT * FROM emp_trigger_log;             -- 1 条：DELETE / old_salary=8000.00 / 删除员工：id=1...
+# 注意 log 里的 old_salary 是从 OLD 拿的，行已经不在 demo 表里了，只有日志还记得它
+
+-- 5. 测试二：一次删多行 → 触发器逐行执行，记多条
+DELETE FROM emp_trigger_demo WHERE salary < 10000;
+SELECT log_id, emp_id, operation_type, old_salary, detail
+FROM emp_trigger_log ORDER BY log_id;
+# 结果：李四 12000 留下；王五 5000、赵六 9000 被删 → 日志又 +2 条
+# 这就是 FOR EACH ROW：删 2 行就跑 2 次触发器
+
+-- 6. 测试三：DELETE 全表 → 每一行都记一笔（危险点）
+# DELETE FROM emp_trigger_demo;    -- 4 行就 4 条日志；要是 100 万行，日志表瞬间爆掉
+# 所以 DELETE 一定要带 WHERE，尤其是挂了 DELETE 触发器的表。
+# 而 TRUNCATE TABLE 不触发 DELETE 触发器（它不算 DML），数据照样没了、日志一条没有 ——
+# 这一点最容易被误判成“触发器失效了”。
+
+-- 7. 测试四：DELETE 不存在的行 → 触发器不触发
+DELETE FROM emp_trigger_demo WHERE id = 99999;
+SELECT COUNT(*) AS `日志条数应无变化` FROM emp_trigger_log;
+# 匹配 0 行就不会触发。触发器只认“真的删掉了一行”。
+
+-- 8. 真正能还原的写法：归档整行
+# 只记 id/name/salary 是“有据可查”，但真要恢复还得靠别的表。
+# 想做到“删了能一键还原”，就建一张结构相同的归档表，把整行塞进去。
+DROP TABLE IF EXISTS emp_archive;
+CREATE TABLE emp_archive LIKE emp_trigger_demo;          -- LIKE：只复制结构，不复制数据
+ALTER TABLE emp_archive
+    ADD COLUMN archived_at DATETIME DEFAULT CURRENT_TIMESTAMP;  -- 记一下什么时候被归档的
+
+DROP TRIGGER IF EXISTS t_emp_archive_delete;
+CREATE TRIGGER t_emp_archive_delete
+    AFTER DELETE ON emp_trigger_demo
+    FOR EACH ROW
+BEGIN
+    INSERT INTO emp_archive (id, name, salary, createtime)
+    VALUES (OLD.id, OLD.name, OLD.salary, OLD.createtime);   -- OLD 里每个字段都能拿到
+END;
+
+-- 测试五：删一行，归档表里能完整还原
+INSERT INTO emp_trigger_demo (name, salary) VALUES ('孙七', 7700.00);
+DELETE FROM emp_trigger_demo WHERE name = '孙七';
+SELECT * FROM emp_archive;      -- 一条完整记录，想恢复就 INSERT INTO emp_trigger_demo SELECT ... FROM emp_archive
+# 恢复语句示例（真要用时再放开）：
+# INSERT INTO emp_trigger_demo (id, name, salary, createtime)
+# SELECT id, name, salary, createtime FROM emp_archive WHERE id = ?;
+
+-- 9. 配套：BEFORE DELETE 做“禁删”校验
+# AFTER DELETE 只能事后记录，拦不住删除。要拦必须在 BEFORE DELETE 里 SIGNAL。
+DROP TRIGGER IF EXISTS t_emp_before_delete;
+CREATE TRIGGER t_emp_before_delete
+    BEFORE DELETE ON emp_trigger_demo
+    FOR EACH ROW
+BEGIN
+    IF OLD.salary > 20000 THEN
+        SIGNAL SQLSTATE '45000'
+            SET MESSAGE_TEXT = '高薪员工不允许直接删除，请先走审批流程';
+    END IF;
+END;
+
+-- 测试六：高薪被拦住
+INSERT INTO emp_trigger_demo (name, salary) VALUES ('高管王', 30000.00);
+# DELETE FROM emp_trigger_demo WHERE name = '高管王';   -- ERROR 1644: 高薪员工不允许直接删除...
+SELECT COUNT(*) AS `高管王还在吗` FROM emp_trigger_demo WHERE name = '高管王';   -- 1，还在
+
+-- 10. 看全貌
+SELECT * FROM emp_trigger_demo;
+SELECT * FROM emp_trigger_log ORDER BY log_id;
+SELECT * FROM emp_archive;
+SELECT TRIGGER_NAME, EVENT_MANIPULATION, ACTION_TIMING, EVENT_OBJECT_TABLE
+FROM information_schema.TRIGGERS WHERE TRIGGER_SCHEMA = 'lyt';   -- 4 个触发器：BEFORE/AFTER × INSERT/UPDATE/DELETE 按需
+
+-- 收尾：练习完清理
+DROP TRIGGER IF EXISTS t_emp_before_delete;
+DROP TRIGGER IF EXISTS t_emp_archive_delete;
+DROP TABLE IF EXISTS emp_archive;
+DROP TABLE IF EXISTS emp_trigger_demo;
+DROP TABLE IF EXISTS emp_trigger_log;
+
+# DELETE 触发器踩坑清单：
+# 1. DELETE 里只能用 OLD，写 NEW 报 1363 There is no NEW row in the trigger。
+# 2. operation_type 这类常量最容易复制粘贴写错（你这次就写成了 'UPDATE'），
+#    不报错、不影响插入，但日志统计全错 —— 建完触发器一定要 SELECT 日志核对一眼。
+# 3. 想拦住删除必须用 BEFORE DELETE + SIGNAL；AFTER DELETE 已经删完了，拦不住。
+# 4. TRUNCATE 不触发 DELETE 触发器，数据照样清空、日志一条没有，别误判成触发器坏了。
+# 5. DELETE 不带 WHERE = 全表逐行触发，100 万行就是 100 万次插入，日志表会爆。
+# 6. 删 0 行不触发；只认“真的删掉了行”。
+# 7. 删父表数据时外键 ON DELETE CASCADE 引起的级联删除，不会触发子表的 DELETE 触发器
+#    （外键动作不激活触发器），要归档子表数据得另外处理。
+# 8. AFTER DELETE 里不能对“正在被删的那张表”再 INSERT/UPDATE，报 1442；
+#    归档请写别的表。真要在同表“复活”，得用 BEFORE DELETE 里插回去那种骚操作，不建议。
+# 9. 归档表用 CREATE TABLE ... LIKE 建，结构天然一致；主键 id 原样保留才能还原。
+# 10. 触发器对应用层隐形：数据“莫名其妙少了一行”时，先 SHOW TRIGGERS 看有没有删除触发器。
