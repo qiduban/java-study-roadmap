@@ -2011,3 +2011,527 @@ DROP TABLE IF EXISTS emp_trigger_log;
 #    归档请写别的表。真要在同表“复活”，得用 BEFORE DELETE 里插回去那种骚操作，不建议。
 # 9. 归档表用 CREATE TABLE ... LIKE 建，结构天然一致；主键 id 原样保留才能还原。
 # 10. 触发器对应用层隐形：数据“莫名其妙少了一行”时，先 SHOW TRIGGERS 看有没有删除触发器。
+
+# ===========================================================锁=============================================================
+USE lyt;
+
+# MySQL 的锁按加锁范围分三层，从大到小：
+#   全局锁  Global Lock        锁整个数据库实例 → 全库只读          FLUSH TABLES WITH READ LOCK
+#   表级锁  Table Lock        锁一张表          → LOCK TABLES / MDL / 意向锁
+#   行级锁  Row Lock          锁一行记录        → InnoDB 的 Record Lock / Gap Lock / Next-Key Lock
+# 范围越大，并发越差：全局锁一上，整个库只能读；行级锁只挡冲突的那几行。
+# 这一节讲全局锁，表级锁和行级锁在后面。
+
+# ============================ 一、全局锁是什么 ============================
+#
+# 全局锁 = 给整个 MySQL 实例加一把“全局读锁”（Global Read Lock），
+# 加锁期间全库进入只读状态：
+#   能被阻塞：INSERT / UPDATE / DELETE（DML）
+#             CREATE / ALTER / DROP / TRUNCATE（DDL）
+#             以及“已经有修改的事务的 COMMIT”
+#   不受影响：SELECT（读照常进行，这也是叫“读锁”的原因）
+#
+# 最典型（也几乎是唯一合理）的用途：全库逻辑备份时保证数据一致性。
+#   不加锁的话，备份 A 表时业务在写 B 表，备份出来的两份数据可能对不上
+#   （比如订单表已经备份完了，订单明细表才开始备份，中间又插入了几笔订单）。
+#
+# 它和 LOCK TABLES 的区别很容易搞混：
+#   FLUSH TABLES WITH READ LOCK  锁的是“实例”，不用指定表名，影响全库
+#   LOCK TABLES 表名 READ        锁的是“表”，只在当前会话有效，必须显式指定表
+# 所以“全局锁”只有前者这一个入口。
+
+-- 1. 加锁 / 解锁的基本写法
+-- 添加全局锁
+FLUSH TABLES WITH READ LOCK;   -- 简写 FTWRL；需要 RELOAD 权限
+-- 进行备份操作（mysqldump、cp 数据文件等）
+
+-- 释放锁
+UNLOCK TABLES;                 -- 注意：它释放的是“当前会话持有的所有锁”，包括 LOCK TABLES 加的
+
+-- 2. 加锁期间发生了什么（这个演示要开两个会话才看得到效果）
+--    会话 A：FLUSH TABLES WITH READ LOCK;
+--    会话 B：INSERT INTO lyt.employee (...) VALUES (...);   -- 卡住，一直等到锁释放
+--    会话 B：SELECT * FROM lyt.employee LIMIT 1;            -- 正常返回，读不受影响
+--    会话 A：UNLOCK TABLES;                                 -- 会话 B 的 INSERT 立刻执行完
+--    注意：连“持锁的会话 A 自己”也写不进去，全局读锁对所有人一视同仁。
+
+# ============================ 二、必须知道的六个特性 ============================
+#
+# 1. 会话级锁，不会永久卡死数据库
+#    锁跟着“会话”走：UNLOCK TABLES 释放，或者会话断开（客户端崩溃、连接超时、
+#    被 KILL）时自动释放。所以就算备份脚本中途挂了，也不会留下一把永远解不开的锁。
+#    反过来说，这也是个隐患 —— 备份过程中连接一断，锁没了，备份还在继续跑，
+#    这时业务又能写数据了 → 备份文件内部不一致。这就是很多备份脚本要“断开就重试”的原因。
+#
+# 2. FLUSH 语句会隐式提交
+#    FLUSH 属于“导致隐式提交”的语句，执行前会先提交当前会话未提交的事务。
+#    所以别在事务中间顺手加锁，事务边界会被它截断。
+#
+# 3. 加锁动作本身可能被卡住
+#    执行 FTWRL 时，MySQL 要先把表都关一遍，会**等正在执行的语句/写事务结束**。
+#    如果此时有一个长事务跑了 10 分钟，你的加锁语句就要陪着等 10 分钟。
+#    线上加锁前先看一眼有没有长事务：
+#      SELECT * FROM information_schema.INNODB_TRX ORDER BY trx_started;   -- 看有没有跑很久的事务
+#      SHOW PROCESSLIST;                                                   -- 看有没有长查询
+#
+# 4. 在从库（replica）上执行，会拖慢复制
+#    FTWRL 同样会阻塞复制线程里的 SQL 线程，从库上的数据变更应用不进来，
+#    复制延迟（Seconds_Behind_Source）会一路往上涨。锁多久，延迟就涨多久。
+#
+# 5. 不要在业务高峰的主库上随手加
+#    全局锁期间所有写请求全部阻塞。写入一堵，连接池很快被占满，
+#    接着超时、重试、雪崩 —— 这是很典型的线上事故姿势。
+#    真要备份，用下面第三节的替代方案，或者从从库备份。
+#
+# 6. 它不写 binlog
+#    FLUSH TABLES WITH READ LOCK 不会记进 binlog（记了反而会在从库上引发问题）。
+
+# ============================ 三、备份的四种做法对比 ============================
+#
+#   方案                              是否阻塞业务写     适用引擎            说明
+#   ------------------------------    --------------    ----------------    --------------------------------
+#   FLUSH TABLES WITH READ LOCK       是（全库只读）    任意引擎            万金油，代价最大
+#   mysqldump --single-transaction    否（MVCC 快照）   仅 InnoDB           最常用的逻辑备份方式
+#   LOCK INSTANCE FOR BACKUP          否（允许 DML）    仅 InnoDB           8.0 的备份锁，只挡 DDL
+#   XtraBackup / MySQL Enterprise     否                仅 InnoDB           物理备份，靠 redo 保证一致
+#
+# 逐个说明：
+#
+# 1) mysqldump --single-transaction（InnoDB 首选）
+#    它在 REPEATABLE READ 下开一个一致性快照，整个备份看到的是同一时刻的数据，
+#    期间业务照常读写，完全不用加全局锁。
+#    命令形如：
+#      mysqldump -uroot -p --single-transaction --master-data=2 --databases lyt > lyt.sql
+#    限制：只对支持事务的引擎有效。表里混了 MyISAM 就失去一致性保证
+#          （mysqldump 遇到这种情况会退回去用 FTWRL）。
+#
+# 2) LOCK INSTANCE FOR BACKUP（MySQL 8.0 的备份锁）
+#    这是 8.0 专门为备份设计的“实例级备份锁”，比 FTWRL 温和得多：
+#      允许：DML（INSERT/UPDATE/DELETE 照常跑）
+#      阻塞：DDL 等会破坏备份一致性的操作
+#    需要 BACKUP_ADMIN 权限，用 UNLOCK INSTANCE 释放。
+#    这也是 MySQL Enterprise Backup、Clone 插件这些工具内部用的机制。
+#    LOCK INSTANCE FOR BACKUP;
+#    -- 备份...
+#    UNLOCK INSTANCE;
+#
+# 3) 那 FTWRL 还要不要学？
+#    要。因为：混合引擎（MyISAM）备份、老版本环境、以及面试和各种文档里天天出现。
+#    知道它“代价极大、能不用就别用”本身就是重点。
+#
+# 4) SET GLOBAL read_only = ON 不是全局锁，别搞混
+#    它是“实例只读开关”，不是锁：
+#      read_only=ON        普通用户不能写，但拥有 SUPER 权限的账号照样能写
+#      super_read_only=ON  连 SUPER 也拦住（5.7 起才有），做真正只读更可靠
+#    区别关键：read_only 期间没有“加锁等待”，它不参与锁竞争，是权限层面的限制。
+
+# ============================ 四、怎么看当前有没有全局锁 ============================
+-- 看全局锁（8.0 用 MDL 实现，可以在 metadata_locks 里看到）
+SELECT OBJECT_TYPE, OBJECT_SCHEMA, OBJECT_NAME, LOCK_TYPE, LOCK_STATUS, OWNER_THREAD_ID
+FROM performance_schema.metadata_locks
+WHERE OBJECT_TYPE = 'GLOBAL' OR OBJECT_TYPE = 'COMMIT';
+# OBJECT_TYPE='GLOBAL' 就是全局读锁；'COMMIT' 是配合它挡住事务提交的那把
+
+-- 看是哪个线程持着锁，再顺藤摸瓜找到那条 SQL
+SELECT THREAD_ID, PROCESSLIST_ID, PROCESSLIST_USER, PROCESSLIST_INFO
+FROM performance_schema.threads
+WHERE PROCESSLIST_INFO LIKE 'FLUSH TABLES%';
+
+-- 看有没有被全局锁挡住、正在等待的会话
+SELECT * FROM performance_schema.metadata_locks
+WHERE LOCK_STATUS = 'PENDING';    -- PENDING = 正在排队等锁
+
+-- 极简版：直接看进程列表，加锁的会显示 “Waiting for global read lock” 或本身是 FTWRL
+SHOW PROCESSLIST;
+
+# ============================ 五、踩坑清单 ============================
+# 1. 备份期间连接断了，锁自动释放、备份继续跑 → 备份文件内部不一致。
+#    脚本要能检测到这种情况并重做，或者干脆用 --single-transaction。
+# 2. 长事务会把你自己的 FTWRL 卡住（加锁要等正在执行的写事务结束），
+#    上线前先查 INNODB_TRX，别在有长事务时加锁。
+# 3. 在从库上加锁会阻塞 SQL 线程 → 复制延迟暴涨，锁 5 分钟延迟就涨 5 分钟。
+# 4. FTWRL 是“全库只读”，不是“只锁要备份的那张库”，影响面比你想要的大得多。
+# 5. UNLOCK TABLES 释放的是当前会话的所有锁，如果你同时还 LOCK TABLES 了某张表，
+#    一并被释放了，容易出“锁怎么莫名没了”的困惑。
+# 6. 别把 read_only=ON 当全局锁用：SUPER 用户照样能写，要么用 super_read_only，
+#    要么老老实实加锁。
+# 7. 备份优先“从从库做”，别在主库上折腾；而且从库也别忘了它会拖慢复制。
+# 8. FTWRL 只挡写和 DDL，不挡 SELECT —— 所以“加锁了业务怎么还在跑”是正常的，
+#    读到的是锁加之前的数据。
+# 9. 混引擎的表（InnoDB + MyISAM）用 --single-transaction 会失去一致性保证，
+#    这种情况才真的需要 FTWRL。
+# 10. 8.0 里优先考虑 LOCK INSTANCE FOR BACKUP：允许 DML、只挡 DDL，对业务友好得多。
+
+# ========================================================= 表级锁 =========================================================
+USE lyt;
+
+# 表级锁不止“表锁”一种，MySQL 里其实有四类，平时最容易混：
+#   1. 表锁       LOCK TABLES 手动加的读写锁 —— 本节主角，粒度粗，InnoDB 里基本不用
+#   2. 元数据锁   MDL（Metadata Lock）—— 系统自动加，不用你写，但线上事故多半是它
+#   3. 意向锁     IS / IX —— InnoDB 自动加，用来让“表锁”和“行锁”快速判断冲突
+#   4. 自增锁     AUTO-INC —— 保证自增值不重复
+# 下面按这个顺序讲。
+
+# ============================ 一、表锁：READ 与 WRITE ============================
+#
+#                持锁会话自己        其他会话
+#   READ  锁     只能读，不能写      能读（不用显式加锁），不能写 → 写请求排队等
+#   WRITE 锁     能读也能写          读写都不行 → 全部排队等
+#
+# 记法：READ 是“共享锁”（大家都能读），WRITE 是“排他锁”（只有我能碰）。
+#
+# 另外两条容易忽略的：
+#   持 READ 锁的会话不能 DROP TABLE / TRUNCATE TABLE（这俩算写操作）
+#   持 WRITE 锁的会话可以 DROP TABLE / TRUNCATE TABLE
+#
+# READ LOCAL：比 READ 松一点，允许别的会话做“不冲突的并发 INSERT”（MyISAM 的 concurrent insert）。
+#   注意：InnoDB 表上 READ LOCAL 和 READ 完全一样，没有区别。
+# LOW_PRIORITY WRITE：已废弃，写了不报错但会给你一个 warning，行为等同 WRITE。别用。
+
+-- 读锁（多个会话可以同时读取这张表，但是不能对这张表进行写操作。）
+LOCK TABLES employee READ; -- 创建读锁
+SELECT * FROM employee; -- 现在 employee 只能读不能写；其他会话也能读，但写请求会排队等这把锁释放
+# 注意措辞：锁是“某个会话持有的”，不是“跟着表走”。
+#   表只是被锁的对象，锁的归属是会话 —— 所以会话一断，锁就没了（见第四节）。
+#   你原来写的“锁本质上是跟着表走的”容易让人以为锁是表的属性，改一下更准确。
+# 自己也不能写：下面这句会报 1099 Table 'employee' was locked with a READ lock and can't be updated
+# INSERT INTO employee (id, name, salary, age) VALUES (90250326, '测试', 100, 20);
+UNLOCK TABLES; -- 释放锁
+
+LOCK TABLES employee WRITE; --  创建写锁
+SELECT * FROM employee;     -- 持锁会话自己读没问题
+INSERT INTO lyt.employee (id, name, salary, age)
+VALUES (90250325, '王梦燊', 12345.67, 20); -- 写锁既可以读取数据也可以写入数据，在锁未释放时其他会话无法对表进行任何操作
+UNLOCK TABLES; -- 释放锁
+# 提醒：这条 INSERT 重复执行会报 1062 主键冲突（id 写死了 90250325）。
+# 练习时先 DELETE FROM employee WHERE id = 90250325; 再跑，或者每次换个 id。
+
+-- 演示“别的会话被挡住”要开两个连接才看得到：
+--   会话 A：LOCK TABLES employee WRITE;
+--   会话 B：SELECT * FROM employee LIMIT 1;   -- 卡住（写锁连读都挡）
+--   会话 A：UNLOCK TABLES;                    -- 会话 B 立刻返回
+-- 对比 READ 锁：会话 A 持 READ 锁时，会话 B 的 SELECT 能正常返回，只有 INSERT/UPDATE 会卡。
+
+# ============================ 二、写优先：读会被“饿死” ============================
+#
+# WRITE 锁的优先级高于 READ。这条规则的后果比想象的严重：
+#   1. 会话 A 拿到 READ 锁
+#   2. 会话 B 请求 WRITE 锁 → 排队等 A
+#   3. 会话 C 请求 READ 锁 → 本来和 A 兼容，但因为 B 在排队，C 也得等！
+# 也就是说：一个写请求插队，会把后面所有读请求一起堵住。
+# 高并发读的表上，一个慢写操作能让整张表的查询全部超时。
+# 这就是 InnoDB 要用行锁的根本原因 —— 别让一个写操作锁住整张表。
+
+# ============================ 三、最大的坑：1100 未锁表 ============================
+#
+# 一旦执行了 LOCK TABLES，当前会话就进入“只能访问被锁表”的模式。
+# 访问任何没在锁清单里的表 → ERROR 1100 Table 'xxx' was not locked with LOCK TABLES
+#
+# 所以：需要的所有表必须在一条 LOCK TABLES 里一次锁全，不能分两次加。
+LOCK TABLES employee READ, department READ;   -- 一次锁全，两张表都能查
+SELECT e.name, d.dept_name
+FROM employee e JOIN department d ON d.dept_id = e.dept_id
+LIMIT 5;
+UNLOCK TABLES;
+
+# 反例（会报 1100）：
+# LOCK TABLES employee READ;
+# SELECT * FROM department;      -- ERROR 1100：department 没在锁清单里
+# UNLOCK TABLES;
+#
+# 唯一例外：information_schema 不用锁也能访问，所以持锁期间照样能查元数据：
+LOCK TABLES employee READ;
+SELECT TABLE_NAME, ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'lyt';  -- 正常
+UNLOCK TABLES;
+
+# ============================ 四、别名必须对得上（很阴的坑） ============================
+#
+# 规则：查询里用什么名字引用表，就必须用什么名字加锁。
+#
+# 坑 1：锁的是原名，查的时候起了别名 → 报 1100
+#   LOCK TABLES employee READ;
+#   SELECT * FROM employee AS e;        -- ERROR 1100: Table 'e' was not locked with LOCK TABLES
+#
+# 坑 2：锁的是别名，查的时候用原名 → 同样报 1100
+#   LOCK TABLES employee AS e READ;
+#   SELECT * FROM employee;             -- ERROR 1100: Table 'employee' was not locked
+#   SELECT * FROM employee AS e;        -- 这样才对
+#
+# 坑 3：同一条 SQL 里多次引用同一张表，必须给每个引用单独加锁
+LOCK TABLES employee WRITE, employee AS e2 READ;   -- 原名和别名各锁一次
+INSERT INTO employee (id, name, salary, age)
+SELECT id + 1000000, name, salary, age FROM employee AS e2 WHERE id = 90250325;
+UNLOCK TABLES;
+# 不加 e2 那把锁就会报 1100 —— 因为一条语句里出现了两个对同表的引用。
+# 练习完清掉这条派生数据：
+DELETE FROM employee WHERE id = 1090250325;
+
+# ============================ 五、锁怎么释放（四种途径） ============================
+#
+# 1. 显式：UNLOCK TABLES —— 一次释放当前会话的“全部”表锁，不能只放某一张
+# 2. 隐式：再次执行 LOCK TABLES —— 新锁生效前，旧锁自动全部释放
+# 3. 隐式：START TRANSACTION —— 开启事务会隐式 UNLOCK TABLES（这个最容易踩）
+# 4. 隐式：连接断开 —— 正常退出或异常崩溃，服务器都会释放该会话所有表锁，
+#          同时回滚它未提交的事务。所以不会留下“永远解不开的表锁”。
+#
+# 但第 4 条有个陷阱：客户端如果开了自动重连（auto-reconnect），
+# 断线后悄悄重连成功，你以为锁还在，其实锁和事务全没了。
+# 需要严格锁语义的程序应该关掉自动重连，让断线直接报错，好重新加锁。
+
+# ============================ 六、和事务的关系（重点，容易出 bug） ============================
+#
+# 1. LOCK TABLES 不是事务安全的：执行它会“隐式提交”当前未提交的事务。
+#    所以别在事务中间加表锁，事务边界会被它截断。
+# 2. UNLOCK TABLES 也会隐式提交 —— 但仅当你之前用 LOCK TABLES 拿过表锁。
+#    只加了 FTWRL（全局读锁）时，UNLOCK TABLES 只放锁、不提交事务。
+# 3. START TRANSACTION 会隐式释放表锁 → 千万别用 START TRANSACTION 配 LOCK TABLES。
+# 4. ROLLBACK 不释放表锁！回滚了事务，锁还在手上，必须自己 UNLOCK TABLES。
+# 5. InnoDB 的内部表锁在下一次 COMMIT 时释放，MySQL 层的表锁要 UNLOCK TABLES 才释放。
+#    autocommit=1 时 InnoDB 干脆不拿内部表锁，很容易死锁。
+#
+# 官方推荐的正确姿势（InnoDB + 表锁）：用 SET autocommit=0，不要用 START TRANSACTION
+SET autocommit = 0;                  -- 关键：不是 START TRANSACTION
+LOCK TABLES employee WRITE, department READ;
+UPDATE employee SET salary = salary + 1 WHERE id = 90250325;
+SELECT dept_name FROM department WHERE dept_id = 1;
+COMMIT;                              -- 先显式提交
+UNLOCK TABLES;                       -- 再释放锁，顺序不能颠倒
+SET autocommit = 1;                  -- 练习完恢复默认，别把会话留在 autocommit=0
+# 顺序记牢：SET autocommit=0 → LOCK TABLES → 干活 → COMMIT → UNLOCK TABLES
+
+# ============================ 七、LOCK TABLES 和触发器 ============================
+#
+# 显式锁一张表时，它的触发器里用到的表会被“隐式一起锁上”：
+#   触发器里只读的表 → 加读锁
+#   触发器里会写的表 → 加写锁
+#   而且：显式请求 READ，但触发器里要写这张表 → READ 会被自动升级成 WRITE
+#
+# 举例：LOCK TABLES t1 WRITE, t2 READ;
+#   如果 t1 的触发器里 INSERT INTO t2 → t2 的 READ 请求被升级成 WRITE
+#   如果 t1 的触发器里还读了 t3、改了 t4 → t3 加读锁、t4 加写锁（你没写它们也会被锁）
+# 所以：给带触发器的表加表锁时，实际锁的范围比你写的大，排查阻塞时别漏了这些表。
+
+# ============================ 八、表锁的硬限制 ============================
+#
+# 1. LOCK TABLES / UNLOCK TABLES 不能写在存储程序里（存储过程、函数、触发器都不行）。
+#    这也是为什么前面那些过程和触发器演示里从来没出现过 LOCK TABLES。
+# 2. performance_schema 里的表不能被 LOCK TABLES 锁（setup_xxx 那几张除外）。
+# 3. 持锁期间禁止这些语句：CREATE TABLE、CREATE TABLE ... LIKE、CREATE VIEW、DROP VIEW，
+#    以及对存储函数/过程/事件的 DDL。
+# 4. TEMPORARY 表：LOCK TABLES 允许写但直接忽略 —— 临时表本来就只有当前会话能看见，不需要锁。
+# 5. ALTER TABLE 可能让表锁失效：连着做第二次 ALTER 会报 1100，得重新加锁。
+# 6. 正在等表锁的会话可以安全 KILL 掉（KILL <processlist_id>）。
+# 7. 表锁只在“单个 MySQL 实例”内有效，NDB Cluster 那种多实例场景不生效。
+
+# ============================ 九、元数据锁 MDL（线上事故重灾区） ============================
+#
+# MDL 是 MySQL 5.5 引入的，系统自动加，不用你写任何语句：
+#   执行 SELECT / INSERT / UPDATE / DELETE → 自动加 MDL 读锁（共享）
+#   执行 ALTER / DROP / TRUNCATE 等 DDL     → 自动加 MDL 写锁（排他）
+# 目的：防止“一边查数据一边改表结构”导致读到不一致的元数据。
+#
+# 关键特性：MDL 在“事务结束”时才释放，不是语句执行完就放。
+# 这就埋了一个经典雪崩：
+#   1. 会话 A：BEGIN; SELECT * FROM employee;  然后一直不提交
+#      → A 持有 employee 的 MDL 读锁，且因为事务没结束，锁一直不放
+#   2. 会话 B：ALTER TABLE employee ADD COLUMN xxx INT;
+#      → 要 MDL 写锁，被 A 挡住，开始等
+#   3. 会话 C、D、E...：SELECT * FROM employee;
+#      → 本来和 A 的读锁兼容，但 B 的写锁在排队（写优先），于是全部一起等
+#   结果：一个忘了提交的事务 + 一条 ALTER，把整张表的所有查询全堵死。
+#
+# 这就是“给大表加字段前先看有没有长事务”的原因：
+SELECT trx_id, trx_state, trx_started,
+       TIMESTAMPDIFF(SECOND, trx_started, NOW()) AS `已运行秒数`, trx_mysql_thread_id
+FROM information_schema.INNODB_TRX
+ORDER BY trx_started;      -- 排在最前面的就是最老的事务，先看它是不是忘了提交
+
+-- 看 MDL 的持有和等待情况
+SELECT OBJECT_TYPE, OBJECT_SCHEMA, OBJECT_NAME, LOCK_TYPE, LOCK_DURATION, LOCK_STATUS, OWNER_THREAD_ID
+FROM performance_schema.metadata_locks
+WHERE OBJECT_SCHEMA = 'lyt';
+# LOCK_STATUS = GRANTED 已拿到；PENDING 正在等
+# LOCK_TYPE = SHARED_READ / SHARED_WRITE 是 DML 加的；EXCLUSIVE 是 DDL 加的
+# 如果这张表查出来是空的，先确认 instrument 开着：
+# UPDATE performance_schema.setup_instruments SET ENABLED='YES', TIMED='YES'
+# WHERE NAME = 'wait/lock/metadata/sql/mdl';
+
+-- 更省事：sys 库有现成的视图，直接告诉你“谁堵了谁”
+SELECT * FROM sys.schema_table_lock_waits;
+# 里面有 blocking_pid，可以直接 KILL 掉那个阻塞源（先确认它不是重要业务）
+
+# ============================ 十、意向锁 IS / IX ============================
+#
+# 问题：会话 A 锁了表里某一行（行锁），会话 B 想锁整张表（表锁），
+#       B 怎么知道表里有没有行锁？难道逐行扫一遍？那太慢了。
+# 解法：加行锁之前，先在“表”上打一个标记 —— 这就是意向锁。
+#   要加行级共享锁（S）→ 先在表上加 IS（Intention Shared）
+#   要加行级排他锁（X）→ 先在表上加 IX（Intention Exclusive）
+# 于是 B 只要看表上有没有 IS/IX，一眼就知道能不能加表锁，不用扫行。
+#
+# 兼容性（记住这张表就够了）：
+#            IS      IX      S(表共享)   X(表排他)
+#   IS       兼容    兼容    兼容        冲突
+#   IX       兼容    兼容    冲突        冲突
+#   S        兼容    冲突    兼容        冲突
+#   X        冲突    冲突    冲突        冲突
+#
+# 两个要点：
+# 1. IS 和 IX 之间互相兼容 —— 因为它们只表示“我打算锁某些行”，具体冲不冲突交给行锁去判断。
+#    所以意向锁不会降低行级操作的并发度。
+# 2. 意向锁只和“表级锁”冲突，不和行锁冲突。它存在的唯一意义就是让表锁快速判断。
+# 3. 意向锁是 InnoDB 自动加的，你写不了也不用写。
+
+-- 看当前的锁（8.0 用 data_locks，5.7 是 INNODB_LOCKS）
+SELECT ENGINE_TRANSACTION_ID, OBJECT_NAME, LOCK_TYPE, LOCK_MODE, LOCK_STATUS, LOCK_DATA
+FROM performance_schema.data_locks;
+# LOCK_TYPE = TABLE 且 LOCK_MODE = IX / IS → 就是意向锁
+# LOCK_TYPE = RECORD → 行锁（下一节讲）
+# 这张表要在“有事务正在持锁”时才看得到内容，空跑一条 SELECT 是看不到的
+
+# ============================ 十一、自增锁 AUTO-INC ============================
+#
+# 往有 AUTO_INCREMENT 的表插数据时，InnoDB 要保证自增值不重复，于是有自增锁。
+# 由 innodb_autoinc_lock_mode 控制三种模式：
+#   0  traditional  表级 AUTO-INC 锁，整条 INSERT 语句期间都持有 → 并发最差
+#   1  consecutive  简单 INSERT 用轻量 mutex 立刻释放；批量 INSERT ... SELECT 仍用表级锁
+#   2  interleaved  全部用轻量 mutex，自增值可能不连续但保证唯一 → 并发最好（8.0 默认）
+SHOW VARIABLES LIKE 'innodb_autoinc_lock_mode';
+# 8.0 默认 2，因为默认用 row 格式复制，不再需要“自增值连续”这个保证。
+# 所以：别依赖自增 id 连续，中间有空洞是正常的（回滚、并发插入都会留洞）。
+
+# ============================ 十二、排查表锁的常用命令 ============================
+-- 1. 看哪些表被显式锁着（In_use > 0 表示有会话正持有表锁）
+SHOW OPEN TABLES FROM lyt WHERE In_use > 0;
+
+-- 2. 看谁在等锁：State 里出现 Waiting for table metadata lock 就是被 MDL 挡住
+SHOW PROCESSLIST;
+
+-- 3. 表锁等待的统计（MyISAM 场景更有意义）
+SHOW GLOBAL STATUS LIKE 'Table_locks%';
+# Table_locks_immediate 立刻拿到锁的次数；Table_locks_waited 需要等待的次数
+# waited 占比高说明表锁竞争激烈，该考虑换 InnoDB 或用行锁了
+
+-- 4. 直接杀掉阻塞源（先从上面的视图里找到 pid，确认不是重要业务再杀）
+# KILL 123;
+
+# ============================ 表级锁踩坑清单 ============================
+# 1. 加了 LOCK TABLES 之后只能访问被锁的表，碰别的表报 1100。需要的表必须一次锁全。
+# 2. 别名必须和加锁时用的名字一致，否则报 1100；同一 SQL 多次引用同表要分别加锁。
+# 3. READ 锁下自己也写不了（1099）；WRITE 锁下别人连读都不行。
+# 4. WRITE 优先级高于 READ → 一个排队的写请求会把后面所有读请求一起堵住。
+# 5. START TRANSACTION 会隐式释放表锁；要配事务请用 SET autocommit=0。
+# 6. ROLLBACK 不释放表锁，回滚完还得自己 UNLOCK TABLES。
+# 7. LOCK TABLES 和 UNLOCK TABLES 都会隐式提交事务，别在事务中间用。
+# 8. LOCK TABLES 不能写在存储过程/函数/触发器里。
+# 9. MDL 到事务结束才释放：长事务 + 一条 ALTER = 整表查询全部卡死。加字段前先查 INNODB_TRX。
+# 10. 带触发器的表加表锁时，触发器用到的表会被隐式加锁，READ 还可能被升级成 WRITE。
+# 11. 自动重连会悄悄丢掉表锁和事务，需要严格锁语义的程序要关掉它。
+# 12. InnoDB 有行锁，日常业务基本不需要手动 LOCK TABLES；它主要留给 MyISAM 和特殊维护场景。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
