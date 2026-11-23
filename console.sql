@@ -2325,6 +2325,20 @@ SET autocommit = 1;                  -- 练习完恢复默认，别把会话留�
 
 # ============================ 九、元数据锁 MDL（线上事故重灾区） ============================
 #
+
+SELECT *
+FROM performance_schema.metadata_locks; -- 查看系统中的所有MDL（元数据锁）锁
+
+SELECT
+    OBJECT_TYPE,       -- 锁定对象类型
+    OBJECT_SCHEMA,     -- 数据库名称
+    OBJECT_NAME,       -- 表名或对象名
+    LOCK_TYPE,         -- MDL 锁类型
+    LOCK_DURATION,     -- 锁持续时间
+    LOCK_STATUS,       -- 锁状态
+    OWNER_THREAD_ID    -- 持有锁的线程 ID
+FROM performance_schema.metadata_locks;
+-- 简略查询我们锁需要的内容
 # MDL 是 MySQL 5.5 引入的，系统自动加，不用你写任何语句：
 #   执行 SELECT / INSERT / UPDATE / DELETE → 自动加 MDL 读锁（共享）
 #   执行 ALTER / DROP / TRUNCATE 等 DDL     → 自动加 MDL 写锁（排他）
@@ -2362,6 +2376,19 @@ SELECT * FROM sys.schema_table_lock_waits;
 
 # ============================ 十、意向锁 IS / IX ============================
 #
+    START TRANSACTION ;
+    SELECT *
+    FROM employee
+    WHERE id = 114514
+    FOR SHARE; -- 手动添加意向共享锁
+    commit ;
+
+START TRANSACTION ;
+SELECT *
+FROM employee
+WHERE id = 114514
+    FOR update ; -- 手动添加意向排他锁
+commit ;
 # 问题：会话 A 锁了表里某一行（行锁），会话 B 想锁整张表（表锁），
 #       B 怎么知道表里有没有行锁？难道逐行扫一遍？那太慢了。
 # 解法：加行锁之前，先在“表”上打一个标记 —— 这就是意向锁。
@@ -2388,7 +2415,60 @@ FROM performance_schema.data_locks;
 # LOCK_TYPE = TABLE 且 LOCK_MODE = IX / IS → 就是意向锁
 # LOCK_TYPE = RECORD → 行锁（下一节讲）
 # 这张表要在“有事务正在持锁”时才看得到内容，空跑一条 SELECT 是看不到的
+/*
+================================================
+         InnoDB 不同粒度锁的冲突关系
+================================================
 
+一、表级锁之间
+
+1. IS + IS：兼容
+2. IS + IX：兼容
+3. IS + S ：兼容
+4. IS + X ：冲突
+
+5. IX + IX：兼容
+6. IX + S ：冲突
+7. IX + X ：冲突
+
+8. S + S ：兼容
+9. S + X ：冲突
+10. X + 任何锁：冲突
+
+二、行级锁之间（针对相同记录）
+
+1. S + S：兼容
+2. S + X：冲突
+3. X + X：冲突
+
+三、不同粒度之间
+
+1. 表级 S 与行级 X 的申请冲突：
+   - 行级 X 需要先申请表级 IX。
+   - 表级 S 与 IX 冲突。
+
+2. 表级 X 与行级 S 的申请冲突：
+   - 行级 S 需要先申请表级 IS。
+   - 表级 X 与 IS 冲突。
+
+3. 表级 IX 与行级 X：
+   - 可以兼容其他事务的 IX。
+   - 不同记录上的 X 锁通常可以并发。
+   - 同一记录上的 X 锁发生冲突。
+
+四、判断锁冲突的原则
+
+1. 先判断锁的粒度。
+2. 再判断锁的模式。
+3. 判断锁定对象是否重叠。
+4. 根据兼容性矩阵判断是否冲突。
+5. 注意间隙锁、临键锁可能产生范围冲突。
+
+核心：
+意向锁负责协调不同粒度的锁；
+行锁负责协调具体记录的访问；
+表级锁负责更大范围的访问控制。
+*/
 # ============================ 十一、自增锁 AUTO-INC ============================
 #
 # 往有 AUTO_INCREMENT 的表插数据时，InnoDB 要保证自增值不重复，于是有自增锁。
@@ -2429,109 +2509,301 @@ SHOW GLOBAL STATUS LIKE 'Table_locks%';
 # 11. 自动重连会悄悄丢掉表锁和事务，需要严格锁语义的程序要关掉它。
 # 12. InnoDB 有行锁，日常业务基本不需要手动 LOCK TABLES；它主要留给 MyISAM 和特殊维护场景。
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+# ========================================================= 行级锁 =========================================================
+USE lyt;
+
+# 行级锁是 InnoDB 并发能力比 MyISAM 强的核心：
+# 表锁是“我要改这张表，别人先别碰”，行锁是“我只锁命中的记录，其他行照常用”。
+#
+# 先记住三个总原则：
+# 1. 行锁只存在于 InnoDB，MyISAM 没有行级锁。
+# 2. 行锁实际上锁的是“索引记录”，不是内存里抽象的一整行。
+# 3. 行锁通常到事务 COMMIT / ROLLBACK 才释放，不是 SQL 语句执行完就释放。
+#    所以“更新一条记录后忘记提交”会长期挡住别人。
+#
+# 行锁按共享/排他分：
+#   S（Shared，共享锁）     允许别的事务也加 S；别的事务要加 X 就得等
+#   X（Exclusive，排他锁）  别的事务想加 S 或 X 都得等
+# 同一条记录上：S+S 兼容；S+X、X+X 冲突。
+# 注意“是否冲突”还要看锁定的记录/范围是否重叠：不同记录上的 X 锁可以并存。
+
+# ============================ 一、哪些 SQL 会自动加行锁 ============================
+#
+# 1. 普通 SELECT：默认不加行锁
+SELECT * FROM lock_row_demo WHERE id = 5;
+# 它走的是 MVCC 一致性读（快照读），不需要挡住别人的 UPDATE。
+# “普通 SELECT 会把整张表锁住”是错误理解。
+#
+# 2. UPDATE / DELETE：会自动给命中的记录加 X 锁，直到事务结束
+#    UPDATE lock_row_demo SET salary = salary + 100 WHERE id = 5;
+#    不需要自己写 FOR UPDATE，DML 本来就要改数据，必然需要排他锁。
+#
+# 3. INSERT：会给新插入的记录加 X 锁，并可能涉及插入意向锁、自增锁、唯一键检查。
+#
+# 4. 显式锁定读：普通 SELECT 也想加锁时，用下面两种写法
+#    SELECT ... FOR SHARE   加 S 锁：允许别人也读并加 S，但不许别人改
+#    SELECT ... FOR UPDATE  加 X 锁：别人想改或者也加锁读，就得等
+#
+# 旧写法 LOCK IN SHARE MODE 已不推荐，MySQL 8.0 用 FOR SHARE。
+# FOR SHARE 不等于“只能自己一个人读”，它主要是阻止别的事务修改；
+# 想让别的事务连 S 锁也不能加，要用 FOR UPDATE。
+#
+# autocommit=1 时，单条 FOR UPDATE 语句结束后事务也结束了，锁很快释放；
+# 要观察“事务持锁期间挡住别人”，必须显式 START TRANSACTION，并保持不提交。
+
+-- 准备行锁练习表（不碰 employee 真数据）
+DROP TABLE IF EXISTS lock_row_demo;
+CREATE TABLE lock_row_demo (
+    id     INT PRIMARY KEY,             -- 主键天然是唯一索引，后面演示“唯一索引等值查询”
+    name   VARCHAR(20) NOT NULL,
+    salary DECIMAL(10, 2) DEFAULT 0
+) ENGINE = InnoDB;
+
+INSERT INTO lock_row_demo (id, name, salary)
+VALUES (1, '甲', 1000.00),
+       (5, '乙', 3000.00),
+       (10, '丙', 8000.00);
+SELECT * FROM lock_row_demo;
+# 主键索引现在只有 1、5、10，后面所有区间示例都围绕这三个值。
+
+# ============================ 二、记录锁 Record Lock ============================
+#
+# 记录锁：只锁某一条索引记录，不管它前后的间隙。
+# 典型场景：通过“唯一索引的等值条件”精确定位唯一一行。
+#
+# 会话 A（保持事务不提交）：
+#   START TRANSACTION;
+#   SELECT * FROM lock_row_demo WHERE id = 5 FOR UPDATE;
+#
+# 会话 B：
+#   UPDATE lock_row_demo SET salary = 4000 WHERE id = 5;   -- 被阻塞：id=5 已被 A 加 X 锁
+#   UPDATE lock_row_demo SET salary = 4000 WHERE id = 1;   -- 可以执行：锁的是不同记录
+#   INSERT INTO lock_row_demo VALUES (6, '丁', 5000);      -- 可以执行：唯一等值查询没有锁间隙
+#
+# 会话 A：
+#   ROLLBACK;                                            -- 释放锁，B 被阻塞的语句才能继续
+#
+# data_locks 里这种“只锁记录”的模式通常带 REC_NOT_GAP：
+#   X,REC_NOT_GAP  排他记录锁，不含间隙
+#
+# 关键：记录锁锁的是“索引记录”。
+# 即使表上没有显式索引，InnoDB 也会建立隐藏的聚簇索引并用它加锁，
+# 所以“没有索引就没有行锁”是错的；没有索引只是更容易扩大扫描和锁定范围。
+
+# ============================ 三、间隙锁 Gap Lock ============================
+#
+# 间隙锁锁的是“索引记录之间的空隙”，目的是阻止别的事务往这个空隙里 INSERT。
+# 例如当前索引值是 1、5、10，间隙包括：
+#   (-∞, 1)、(1, 5)、(5, 10)、(10, +∞)
+# 锁住 (1, 5) 后，插入 id=2、3、4 都会被挡住，即使这些 id 目前根本不存在。
+#
+# 间隙锁只防 INSERT，不是用来防止 UPDATE 已有记录；
+# 更新已有记录的冲突由记录锁负责。
+#
+# 一个反直觉点：间隙锁的 S 和 X 不互相冲突。
+# 事务 A 可以持有某间隙的 X 锁，事务 B 也能在同一间隙持有 S 锁。
+# 官方称 gap lock 是“purely inhibitive”（纯粹抑制插入）：
+# 它的作用只是共同声明“这段间隙不许插入”，不是 S/X 之间互相排斥。
+#
+# 什么时候不加间隙锁：
+#   通过唯一索引等值查找唯一一行时，通常只需要记录锁。
+# 什么时候还会有：
+#   非唯一索引等值、范围查询、只使用联合唯一索引的一部分列等情况，都可能锁间隙。
+#
+# READ COMMITTED 下，搜索和索引扫描基本不使用间隙锁；
+# 但外键约束检查和重复键检查仍会使用，所以不能说 RC 下“绝对没有任何间隙锁”。
+
+# ============================ 四、临键锁 Next-Key Lock（RR 的重点） ============================
+#
+# 临键锁 = 记录锁 + 该索引记录“前面那段间隙”的间隙锁。
+# 它不是“记录锁和间隙锁二选一”，而是两者合起来。
+#
+# 默认 REPEATABLE READ 下，InnoDB 做搜索/索引扫描时通常使用临键锁，
+# 除了锁住查到的记录，还防止别的事务在记录前插入新值，从而解决幻读。
+#
+# 当前索引值 1、5、10，临键锁可能覆盖：
+#   (-∞, 1]
+#   (1, 5]
+#   (5, 10]
+#   (10, +∞)
+# 左开右闭：左端点的间隙包含进来，右端点对应的索引记录也包含进来。
+#
+# 例：WHERE id > 5 FOR UPDATE，会锁住 (5, 10] 和 (10, +∞)：
+#   id=10 这条记录本身被锁；
+#   (5,10) 之间不能插入 6、7、8、9；
+#   10 以后也不能插入 11、12 等（最大记录后面的间隙也被锁）。
+# 但 id=4 不在这段范围内，可以插入。
+#
+# 两会话演示（请分别复制到两个 DataGrip 控制台，别整段全选执行）：
+# 会话 A：
+#   START TRANSACTION;
+#   SELECT * FROM lock_row_demo WHERE id > 5 FOR UPDATE;
+# 会话 B：
+#   INSERT INTO lock_row_demo VALUES (7, '丁', 5000);    -- 被临键锁挡住
+#   UPDATE lock_row_demo SET salary = 9000 WHERE id = 10; -- 也被记录锁挡住
+#   INSERT INTO lock_row_demo VALUES (4, '丁', 5000);    -- 可以执行
+# 会话 A：
+#   ROLLBACK;                                            -- 释放锁
+#
+# 对比唯一索引等值查询：WHERE id = 5 FOR UPDATE 只锁 id=5，
+# 而 WHERE id >= 5 FOR UPDATE 是范围查询，会把后面的间隙也纳入，不要混为一谈。
+
+# ============================ 五、插入意向锁 Insert Intention Lock ============================
+#
+# INSERT 在真正插入前，会在目标间隙上加“插入意向锁”，然后再给新记录加 X 锁。
+# 它表达的是：“我准备在这个间隙的这个位置插入”。
+#
+# 它的作用不是让同一个间隙里的所有 INSERT 串行：
+#   事务 A 要插入 5，事务 B 要插入 6，间隙相同但位置不同，可以并发，不必互相等待。
+# 但如果另一个事务已经用 Gap/Next-Key 锁把这个间隙封住，INSERT 就会等待。
+#
+# data_locks 里可能看到 X,INSERT_INTENTION，尤其容易在 INSERT 被间隙锁挡住时看到。
+
+# ============================ 六、索引决定锁的范围 ============================
+#
+# 记住一句话：行锁沿着“执行计划实际扫描的索引”加，不是只锁 WHERE 里你想象的那一行。
+#
+# 1. 主键/唯一索引等值：通常只锁命中的唯一记录，范围最小。
+# 2. 非唯一索引：可能有多条记录同值，还可能锁相邻间隙。
+# 3. 范围条件：RR 下容易形成临键锁，锁的是一段区间。
+# 4. 没有合适索引：可能全表扫描，给扫描经过的大量记录加锁，
+#    虽然名字叫“行锁”，实际效果可能接近锁表。
+#    RC 下不符合 WHERE 的记录锁会提前释放；RR 下范围通常更大。
+#
+# 二级索引也不是“只锁二级索引就完事”：
+# 通过二级索引更新记录时，还会定位并锁对应的主键记录。
+# 排查时看 data_locks 的 INDEX_NAME 和 LOCK_DATA，别只看 SQL 里的列名。
+#
+# 所以优化锁的第一步经常不是研究锁，而是：
+EXPLAIN SELECT * FROM lock_row_demo WHERE id = 5;
+# 看 type 是否 const/ref、key 是否真正用上索引、rows 是否很小。
+# 没走索引的范围更新，先补索引，再谈锁优化。
+
+# ============================ 七、隔离级别对行锁的影响 ============================
+SHOW VARIABLES LIKE 'transaction_isolation';
+# MySQL 默认 REPEATABLE READ（可重复读）。
+#
+# REPEATABLE READ：
+#   默认用临键锁防止幻读；范围更新可能锁住较大区间；间隙锁参与较多。
+# READ COMMITTED：
+#   搜索/索引扫描基本不用间隙锁，一般只锁记录；
+#   不符合 WHERE 的记录锁会在条件判断后释放，锁范围和持有时间都更小。
+#   代价是同一个事务里两次普通 SELECT 可能看到别人已提交的新数据（不可重复读）。
+#
+# 临时切换当前会话做对比：
+# SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+# ... 重新执行上面的范围查询演示 ...
+# SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+#
+# 注意：SET 只影响当前会话后续事务，不会改变已经开启的事务，
+# 也不要为了测试把生产库的隔离级别随手改掉。
+
+# ============================ 八、锁等待超时 1205 ============================
+SHOW VARIABLES LIKE 'innodb_lock_wait_timeout';
+# 默认通常是 50 秒：等锁超过这个时间，报
+#   ERROR 1205: Lock wait timeout exceeded; try restarting transaction
+#
+# 1205 表示“等了很久还没拿到锁”，不一定是死锁。
+# 常见原因是另一个事务没提交，或者锁的范围太大。
+#
+# 默认情况下，超时只回滚等待超时那条语句，不会自动回滚整个事务；
+# 调用方必须决定是重试、回滚还是继续，不能把它当成“事务已经被清理干净”。
+
+# ============================ 九、死锁 1213 ============================
+#
+# 死锁 = 两个事务分别拿着对方需要的锁，谁也走不下去：
+#   A 已锁记录 1，想再锁记录 2；
+#   B 已锁记录 2，想再锁记录 1。
+# InnoDB 检测到循环等待后，自动挑一个事务回滚，另一个继续。
+# 被挑中的事务收到：
+#   ERROR 1213: Deadlock found when trying to get lock; try restarting transaction
+#
+# 经典演示（两个控制台按顺序交错执行）：
+#   A: START TRANSACTION;
+#   B: START TRANSACTION;
+#   A: UPDATE lock_row_demo SET salary=salary+1 WHERE id=1;  -- A 拿到 1
+#   B: UPDATE lock_row_demo SET salary=salary+1 WHERE id=5;  -- B 拿到 5
+#   A: UPDATE lock_row_demo SET salary=salary+1 WHERE id=5;  -- A 等 B 的 5
+#   B: UPDATE lock_row_demo SET salary=salary+1 WHERE id=1;  -- B 等 A 的 1 → 死锁
+# 一个事务被回滚，另一个可以继续；练习结束把两个会话都 ROLLBACK。
+#
+# 和 1205 的区别：
+#   1205 锁等待超时：排队太久，可能根本没形成死锁
+#   1213 死锁：检测到循环等待，主动回滚一个事务来解开
+
+-- 查看最近一次死锁详情：重点看 LATEST DETECTED DEADLOCK 段
+SHOW ENGINE INNODB STATUS;
+# DataGrip 控制台一般直接执行 SHOW ENGINE INNODB STATUS; 也可以：
+SHOW ENGINE INNODB STATUS;
+# 里面能看到两个事务各自在执行什么 SQL、拿着什么锁、在等什么锁，
+# 以及最后哪个事务被回滚（WE ROLL BACK TRANSACTION ...）。
+
+# ============================ 十、NOWAIT 与 SKIP LOCKED ============================
+#
+# 不想排队时，可以在锁定读后面加：
+#   FOR UPDATE NOWAIT      拿不到锁就立刻报错，不等
+#   FOR UPDATE SKIP LOCKED 跳过被别的事务锁住的记录，只返回能锁到的
+#   FOR SHARE NOWAIT / FOR SHARE SKIP LOCKED 同样适用
+#
+# 例子：
+#   SELECT * FROM lock_row_demo WHERE id > 0 FOR UPDATE NOWAIT;
+#   SELECT * FROM lock_row_demo WHERE id > 0 FOR UPDATE SKIP LOCKED;
+#
+# NOWAIT 适合“锁不住就快速失败”的业务；
+# SKIP LOCKED 适合多消费者抢任务队列：每个人跳过别人正在处理的任务。
+# 注意：SKIP LOCKED 得到的是不完整的视图，不适合要求精确统计总数的查询。
+
+# ============================ 十一、查看行锁与等待 ============================
+-- 1. 看 InnoDB 当前持有的行锁/表锁
+SELECT ENGINE, ENGINE_LOCK_ID, ENGINE_TRANSACTION_ID,
+       OBJECT_SCHEMA, OBJECT_NAME, INDEX_NAME,
+       LOCK_TYPE, LOCK_MODE, LOCK_STATUS, LOCK_DATA
+FROM performance_schema.data_locks
+WHERE OBJECT_SCHEMA = 'lyt';
+# LOCK_TYPE=RECORD 表示索引记录锁
+# LOCK_MODE：
+#   S / X                 共享/排他，可能包含间隙
+#   S,REC_NOT_GAP         只锁记录
+#   X,REC_NOT_GAP         只锁记录
+#   S,GAP / X,GAP         只锁间隙
+#   X,INSERT_INTENTION    插入意向锁
+# LOCK_DATA：记录对应的索引值；出现 supremum 表示最大索引值之后的伪记录/间隙。
+# 没有活跃事务持锁时，这张表是空的，不是 SQL 写错了。
+
+-- 2. 看谁等谁
+SELECT * FROM performance_schema.data_lock_waits;
+# REQUESTING_ENGINE_TRANSACTION_ID 是等待锁的事务
+# BLOCKING_ENGINE_TRANSACTION_ID 是持锁、挡住别人前进的事务
+
+-- 3. 看事务开了多久、最后一条 SQL 是什么
+SELECT trx_id, trx_state, trx_started,
+       TIMESTAMPDIFF(SECOND, trx_started, NOW()) AS `事务已运行秒数`,
+       trx_mysql_thread_id
+FROM information_schema.INNODB_TRX
+ORDER BY trx_started;
+
+-- 4. 看线程/连接，准备定位阻塞源
+SELECT PROCESSLIST_ID, PROCESSLIST_USER, PROCESSLIST_HOST,
+       PROCESSLIST_DB, PROCESSLIST_COMMAND, PROCESSLIST_TIME, PROCESSLIST_INFO
+FROM performance_schema.threads
+WHERE PROCESSLIST_ID IS NOT NULL;
+
+# 找到阻塞源之后，优先联系对应会话正常 COMMIT/ROLLBACK；
+# 确认可以终止时才 KILL <processlist_id>，不要看到锁就乱杀业务事务。
+
+-- 收尾：练习完清理表
+DROP TABLE IF EXISTS lock_row_demo;
+
+# ============================ 行级锁踩坑清单 ============================
+# 1. 普通 SELECT 默认走 MVCC 快照读，不加行锁；要加锁必须显式 FOR SHARE / FOR UPDATE。
+# 2. UPDATE/DELETE 会自动加 X 锁；不要以为没写 FOR UPDATE 就没有锁。
+# 3. 行锁通常到事务结束才释放。长事务、忘提交，是别人卡住的头号原因。
+# 4. 行锁锁的是索引记录，不是“表里抽象的一行”；没有显式索引也会用隐藏聚簇索引。
+# 5. 唯一索引等值查询通常只加记录锁；非唯一索引、范围查询可能加间隙锁/临键锁。
+# 6. 临键锁 = 记录锁 + 前面的间隙，默认 RR 用来防幻读；左开右闭，别只盯查到的那一行。
+# 7. 间隙锁只阻止 INSERT，且 S/X 间隙锁之间不冲突，不要套用记录锁的 S+X 互斥理解。
+# 8. RC 基本取消搜索/扫描的间隙锁，但外键和重复键检查仍会用；别说成“RC 完全没有间隙锁”。
+# 9. 没走索引可能扫描并锁住大量记录，看起来像锁表。先用 EXPLAIN 看扫描范围。
+# 10. 1205 是锁等待超时，1213 是死锁；前者等太久，后者被 InnoDB 主动回滚一个事务。
+# 11. 1205 默认只回滚超时语句，不等于整个事务已经回滚；应用程序必须处理后续事务状态。
+# 12. NOWAIT 是拿不到锁立刻报错，SKIP LOCKED 是跳过被锁记录；后者结果可能不完整，别拿去精确计数。
