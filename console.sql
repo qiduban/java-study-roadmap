@@ -2807,3 +2807,327 @@ DROP TABLE IF EXISTS lock_row_demo;
 # 10. 1205 是锁等待超时，1213 是死锁；前者等太久，后者被 InnoDB 主动回滚一个事务。
 # 11. 1205 默认只回滚超时语句，不等于整个事务已经回滚；应用程序必须处理后续事务状态。
 # 12. NOWAIT 是拿不到锁立刻报错，SKIP LOCKED 是跳过被锁记录；后者结果可能不完整，别拿去精确计数。
+
+# ================================================== InnoDB 事务原理 与 MVCC ==================================================
+USE lyt;
+
+# 对应课程 81~90：
+#   81 事务原理概述   82 redo log        83 undo log
+#   84 MVCC 基本概念  85 隐藏字段        86 undo log 版本链
+#   87 ReadView      88 RC 原理分析     89 RR 原理分析      90 小结
+#
+# 一句话先串起来：
+#   redo log 保证“改了的东西丢不了”（持久性）
+#   undo log 保证“改错了能退回去”（原子性），同时提供旧版本给 MVCC 读
+#   MVCC 用“版本链 + ReadView”让读不加锁也能读到一致的数据（隔离性）
+#   一致性是最终目的，靠上面三个 + 锁共同实现
+
+# ============================ 81. 事务原理概述 ============================
+#
+# ACID 四个特性，以及 InnoDB 分别靠什么落地：
+#
+#   特性      含义                          实现手段
+#   --------  ----------------------------  ----------------------------------------
+#   原子性 A  事务里的操作要么全成要么全败   undo log（记录反向操作，回滚时执行）
+#   一致性 C  数据从一个合法状态到另一个    最终目的，靠 A/I/D + 业务约束共同保证
+#   隔离性 I  并发事务之间互不干扰          锁（当前读）+ MVCC（快照读）
+#   持久性 D  提交了就不会丢                 redo log（WAL：先写日志，后刷数据页）
+#
+# 核心设计思想：WAL（Write-Ahead Logging，日志先行）
+#   修改数据时不是直接把数据页写回磁盘，而是：
+#     1. 先把“改了什么”顺序写入 redo log（顺序 IO，快）
+#     2. 数据页（脏页）留给后台线程慢慢刷盘（随机 IO，慢）
+#   这样事务提交只需要保证 redo log 落盘，就算此刻宕机，重启后也能用 redo 重放出来。
+#   好处：把随机写变成顺序写，事务提交的响应时间大幅缩短。
+#
+# 一个重要区分（面试常问）：
+#   redo log 是 InnoDB 存储引擎层的物理日志，循环写，用于崩溃恢复
+#   binlog   是 MySQL Server 层的逻辑日志，追加写，用于主从复制和数据归档
+#   两者靠“两阶段提交”保证一致：redo prepare → 写 binlog → redo commit
+#   崩溃恢复时：redo 处于 prepare 且 binlog 完整 → 提交；否则回滚
+
+# ============================ 82. redo log ============================
+#
+# 是什么：物理日志，记录“在哪个数据页的哪个位置、做了什么修改”。
+#         注意它是“物理到页、逻辑到页内”，不是记录整行数据，也不是记录 SQL 语句。
+#
+# 解决什么问题：事务提交后，脏页还没刷到磁盘时宕机，数据就丢了。
+#               有了 redo，只要日志在，就能重放恢复。
+#
+# 结构：由 ib_logfile0、ib_logfile1 ... 组成（innodb_log_files_in_group 控制个数），
+#       是一个“固定大小、循环写”的环形空间：
+#
+#        write pos ──►  ┌──────── 可写区域 ────────┐
+#                       └──────────────────────────┘
+#        checkpoint ──► 已被 checkpoint 覆盖、可复用的区域
+#
+#   write pos：当前写到哪了
+#   checkpoint：哪些日志对应的脏页已经刷盘、日志可以复用
+#   两者之间就是“还没刷盘但日志已写”的部分
+#   如果 write pos 追上 checkpoint（环形写满）→ 必须先推进 checkpoint，也就是强制刷脏页，
+#   这时会出现明显的写入卡顿。所以 redo 太小会拖慢写入，太大会增加崩溃恢复时间。
+#
+# 刷盘时机由 innodb_flush_log_at_trx_commit 控制：
+#   0  每秒把 log buffer 写 OS cache 并 fsync 一次 → 可能丢最近 1 秒事务，性能最好
+#   1  每次提交都 fsync（默认）→ 不丢事务，最安全，但每次提交都要等磁盘
+#   2  每次提交写 OS cache，每秒 fsync → 数据库崩溃不丢，操作系统崩溃可能丢 1 秒
+SHOW VARIABLES LIKE 'innodb_flush_log_at_trx_commit';
+
+-- 看 redo 的容量和文件数
+SHOW VARIABLES LIKE 'innodb_log_file_size';
+SHOW VARIABLES LIKE 'innodb_log_files_in_group';
+# 总容量 = innodb_log_file_size × innodb_log_files_in_group
+
+-- 看 redo 的实时位置（LOG 段里的 Log sequence number / checkpoint）
+SHOW ENGINE INNODB STATUS;
+# 重点看这几行：
+#   Log sequence number       当前 LSN
+#   Log flushed up to         已刷到磁盘的 LSN
+#   Last checkpoint at        checkpoint LSN
+# LSN 是单调递增的日志序号，不是文件偏移；三者差距越大，说明待刷脏页越多。
+
+# ============================ 83. undo log ============================
+#
+# 是什么：逻辑日志，记录“反向操作”，不是数据页的物理备份。
+#   INSERT  → undo 里记一条 DELETE
+#   DELETE  → undo 里记一条 INSERT（把整行旧值存下来）
+#   UPDATE  → undo 里记一条反向 UPDATE（把旧值写回）
+#
+# 两个作用，缺一不可：
+#   1. 回滚（原子性）：事务 ROLLBACK 或崩溃恢复时，按 undo 逆序执行反向操作
+#   2. 多版本（MVCC）：给快照读提供历史版本，读到“这个事务开始之前的样子”
+#
+# 分类：
+#   insert undo log  只有本事务自己能看见，提交后立刻可以删除（别人不需要这个版本）
+#   update undo log  UPDATE/DELETE 产生，必须留着给 MVCC 用，不能提交就删
+#                    → 由后台 purge 线程判断“没有任何 ReadView 还需要它”时才清理
+#
+# 存在哪：undo 表空间（8.0 默认独立 undo tablespace，如 undo_001、undo_002）
+#         旧版本在 rollback segment 里，段内分 undo slot / undo log segment
+
+-- 看 undo 表空间
+SELECT SPACE, NAME, FILE_SIZE, STATE FROM information_schema.INNODB_TABLESPACES
+WHERE NAME LIKE 'undo%';
+
+-- 看历史版本链长度（HISTORY LIST LENGTH）
+SHOW ENGINE INNODB STATUS;
+# HISTORY LIST LENGTH = 还没被 purge 的 update undo log 数量
+# 这个值持续上涨通常意味着：有长事务一直不提交，或者有慢查询的 ReadView 一直开着
+# 后果：undo 表空间膨胀、回滚变慢、甚至把磁盘撑满 —— 长事务的真正代价在这里
+
+# ============================ 84. MVCC 基本概念 ============================
+#
+# MVCC = Multi-Version Concurrency Control，多版本并发控制。
+# 目标：读写互相不阻塞。读的时候不加锁，也能读到“某个时刻一致的数据快照”。
+#
+# 两种读，必须分清：
+#
+#   快照读（Snapshot Read / 一致性读）
+#     - 普通 SELECT，不加任何锁
+#     - 读的是 undo log 版本链上的历史版本，走 MVCC
+#     - 例：SELECT * FROM employee WHERE id = 1;
+#
+#   当前读（Current Read）
+#     - 读的是最新已提交版本，并且要加锁
+#     - 例：SELECT ... FOR UPDATE / FOR SHARE、UPDATE、DELETE、INSERT
+#     - 走的是锁（记录锁/间隙锁/临键锁），不走 MVCC 的可见性判断
+#
+# 结论：MVCC 只解决“快照读”的并发问题，当前读还是得靠锁。
+# 这也解释了上一节的疑惑：为什么普通 SELECT 不加锁却不会读到脏数据 —— 因为它读的是历史版本。
+
+# ============================ 85. 隐藏字段 ============================
+#
+# InnoDB 的聚簇索引记录里，除了你定义的列，还有几个看不见的系统列：
+#
+#   DB_TRX_ID    6 字节   最近一次插入或修改这一行的事务 ID
+#   DB_ROLL_PTR  7 字节   回滚指针，指向 undo log 中这一行的上一个版本
+#   DB_ROW_ID    6 字节   隐藏行 ID，仅当表没有主键、也没有唯一非空索引时才生成
+#                         （此时 InnoDB 用它建隐藏聚簇索引）
+#
+# 记忆方式：
+#   DB_TRX_ID   → “这行是谁改的”，MVCC 可见性判断就看它
+#   DB_ROLL_PTR → “上一个版本在哪”，沿它走版本链
+#   DB_ROW_ID   → “没有主键时的替代主键”
+#
+# 除了这三个，行记录头里还有 delete_flag（删除标记位）：
+#   DELETE 语句在 MVCC 里不是物理删除，而是打上删除标记，
+#   真正的物理清除由 purge 线程完成。所以快照读能看到“已删除”的历史版本。
+#
+# 这些都是 InnoDB 内部的物理结构，SQL 层查不到；
+# 想看只能借助工具解析 ibd 文件（如 innodb_ruby / innodb_parser），日常靠原理理解即可。
+
+# ============================ 86. undo log 版本链 ============================
+#
+# 每修改一次，旧版本就被写进 undo log，并用 DB_ROLL_PTR 串起来，
+# 形成一条从“最新版本”向“最老版本”走的单链表：
+#
+#   聚簇索引记录（最新）
+#     │ DB_TRX_ID = 30, DB_ROLL_PTR ──┐
+#     ▼                              │
+#   undo log：旧版本（trx 20）        │
+#     │ DB_ROLL_PTR ─────────────────┘
+#     ▼
+#   undo log：旧版本（trx 10）
+#     │ DB_ROLL_PTR
+#     ▼
+#   undo log：更早的版本 ...
+#
+# 访问一行数据时：
+#   1. 先看最新版本的 DB_TRX_ID，按 ReadView 判断“我能不能看”
+#   2. 不能看就顺着 DB_ROLL_PTR 找上一个版本，再判断
+#   3. 一直往前找，直到找到一个“对我可见”的版本，或者链走完（说明这行对我不可见）
+#
+# 这就是“可重复读”的底层机制：不是把数据复制一份给你，
+# 而是通过版本链 + 可见性规则，让你看到属于你那个时刻的版本。
+
+-- 准备 MVCC 演示表
+DROP TABLE IF EXISTS mvcc_demo;
+CREATE TABLE mvcc_demo (
+    id     INT PRIMARY KEY,
+    name   VARCHAR(20) NOT NULL,
+    salary DECIMAL(10, 2) DEFAULT 0
+) ENGINE = InnoDB;
+
+INSERT INTO mvcc_demo (id, name, salary)
+VALUES (1, '甲', 1000.00),
+       (2, '乙', 2000.00);
+SELECT * FROM mvcc_demo;
+
+# ============================ 87. ReadView ============================
+#
+# ReadView 是“快照读的可见性判断依据”，可以理解成：生成快照那一刻，
+# 数据库给当前事务拍了一张“此时哪些事务还活着”的照片。
+#
+# 四个核心字段：
+#
+#   m_ids          生成 ReadView 时，所有“已启动但未提交”的事务 ID 列表
+#   min_trx_id     m_ids 中的最小值（活跃事务里最小的那个）
+#   max_trx_id     生成 ReadView 时，下一个将要分配的事务 ID
+#                  （注意：不是 m_ids 的最大值；有些资料写“最大值+1”，那是近似说法）
+#   creator_trx_id 创建这个 ReadView 的事务 ID（也就是“我自己”）
+#
+# 可见性判断算法（拿记录的 DB_TRX_ID 去比）：
+#
+#   ① trx_id == creator_trx_id       → 可见（是我自己改的，当然能看见）
+#   ② trx_id <  min_trx_id           → 可见（这个事务在我生成快照前就提交了）
+#   ③ trx_id >= max_trx_id           → 不可见（这个事务在我生成快照之后才启动）
+#   ④ min_trx_id <= trx_id < max_trx_id：
+#        trx_id 在 m_ids 里     → 不可见（它当时还活跃，没提交）
+#        trx_id 不在 m_ids 里   → 可见（它当时已经提交了）
+#
+#   判断为“不可见” → 顺着 DB_ROLL_PTR 找上一个版本，重复上面四步。
+#
+# 为什么 ③ 用 >= 而不是 >：
+#   事务 ID 是按启动顺序递增分配的，max_trx_id 是“下一个待分配”的值，
+#   等于 max_trx_id 的事务还没出生，对当前 ReadView 一定不可见。
+
+# ============================ 88. RC 级别原理分析 ============================
+#
+# READ COMMITTED 的核心：**每次快照读都重新生成一个 ReadView**。
+#
+# 于是：别人提交了，我下一次 SELECT 就能看到 → 出现“不可重复读”。
+#
+# 两会话演示（分别复制到两个控制台，别整段全选执行）：
+#
+# 会话 A：
+#   SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED;
+#   START TRANSACTION;
+#   SELECT * FROM mvcc_demo WHERE id = 1;        -- 第一次读：salary = 1000
+#
+# 会话 B：
+#   START TRANSACTION;
+#   UPDATE mvcc_demo SET salary = 1500 WHERE id = 1;
+#   COMMIT;
+#
+# 会话 A：
+#   SELECT * FROM mvcc_demo WHERE id = 1;        -- 第二次读：salary = 1500 ！
+#   -- 同一个事务内两次读结果不同 → 不可重复读
+#   COMMIT;
+#
+# 原理：第一次 SELECT 用的 ReadView 里，B 还没提交；
+#       第二次 SELECT 重新生成 ReadView，B 已提交，所以可见。
+#
+# 顺带：RC 下幻读也更明显（同一事务两次范围查询，行数可能变化），
+#      因为 RC 基本不加间隙锁，也没有稳定的快照。
+
+# ============================ 89. RR 级别原理分析 ============================
+#
+# REPEATABLE READ 的核心：**只在事务中第一次快照读时生成 ReadView，之后整个事务复用这一个**。
+#
+# 于是：别人在事务期间提交了，我依然看不到 → 可重复读。
+#
+# 两会话演示：
+#
+# 会话 A：
+#   SET SESSION TRANSACTION ISOLATION LEVEL REPEATABLE READ;
+#   START TRANSACTION;
+#   SELECT * FROM mvcc_demo WHERE id = 1;        -- 第一次读：salary = 1500（举例）
+#                                                -- 此刻生成 ReadView，之后一直用它
+#
+# 会话 B：
+#   START TRANSACTION;
+#   UPDATE mvcc_demo SET salary = 9999 WHERE id = 1;
+#   COMMIT;
+#
+# 会话 A：
+#   SELECT * FROM mvcc_demo WHERE id = 1;        -- 再读：还是 1500，看不到 B 的修改
+#   COMMIT;
+#
+# 原理：ReadView 不重新生成，B 的事务 ID 不在我的可见范围里，
+#       所以即使 B 已提交，我也只能沿着版本链读到旧版本。
+#
+# 但注意两个"例外"，很多人在这里答错：
+#
+# 1. 当前读不受这个快照限制
+#      SELECT * FROM mvcc_demo WHERE id = 1 FOR UPDATE;   -- 读最新值 9999，并加锁
+#    RR 的“可重复读”只保证快照读，当前读永远读最新已提交数据。
+#
+# 2. RR 能防幻读，靠的不只是 MVCC
+#    快照读靠 ReadView 让新插入的行不可见；
+#    当前读（FOR UPDATE / UPDATE 范围）靠 Next-Key Lock 锁住间隙，阻止别人插入。
+#    只靠 MVCC 防不住当前读场景下的幻读。
+
+-- 确认当前隔离级别
+SELECT @@transaction_isolation;
+SHOW VARIABLES LIKE 'transaction_isolation';
+# 默认 REPEATABLE-READ
+
+# ============================ 90. 小结 ============================
+#
+# 一张表收尾：
+#
+#   组件        层次          类型        解决的问题              关键点
+#   ----------  ------------  ----------  ----------------------  ----------------------------
+#   redo log    InnoDB 引擎   物理日志    持久性 / 崩溃恢复       循环写；WAL；LSN；checkpoint
+#   undo log    InnoDB 引擎   逻辑日志    原子性回滚 + MVCC 版本  insert undo 可早删；update undo 留给 MVCC
+#   MVCC        InnoDB 机制   ——          读写不阻塞的隔离性      版本链 + ReadView
+#   锁          InnoDB 机制   ——          当前读的隔离性          记录锁/间隙锁/临键锁
+#
+# 三句话记住本质：
+#   1. redo 让“已提交的不丢”，undo 让“没提交的能退”，MVCC 让“读不用等写”。
+#   2. RC 和 RR 的差别只有一个：ReadView 是每次都新建，还是事务内只建一次。
+#   3. 快照读走 MVCC，当前读走锁；RR 的“可重复读”只对快照读成立。
+#
+# 面试高频追问，先备着：
+#   Q: 为什么 RC 会出现不可重复读？     A: 每次 SELECT 新建 ReadView，能看到新提交的事务。
+#   Q: RR 怎么解决幻读？                A: 快照读靠 ReadView 复用；当前读靠 Next-Key Lock 锁间隙。
+#   Q: 长事务的危害？                   A: undo 不能 purge → 版本链变长、undo 表空间膨胀、回滚慢、
+#                                          HISTORY LIST LENGTH 上涨，还可能拖住 MDL 导致 DDL 卡死。
+#   Q: redo 和 binlog 的区别？          A: redo 是引擎层物理日志、循环写、管崩溃恢复；
+#                                         binlog 是 Server 层逻辑日志、追加写、管复制与归档；靠两阶段提交对齐。
+#   Q: 为什么 redo 能提升性能？          A: 顺序 IO 替代随机 IO，提交只保证日志落盘，脏页异步刷。
+
+-- 收尾：练习完清理
+DROP TABLE IF EXISTS mvcc_demo;
+
+# ============================ 事务与 MVCC 踩坑清单 ============================
+# 1. 普通 SELECT 是快照读，不加锁；以为它加锁会导致对锁行为判断错误。
+# 2. RR 的“可重复读”只管快照读，FOR UPDATE / UPDATE 这类当前读永远读最新数据。
+# 3. RC 每次 SELECT 新建 ReadView，所以同一事务两次查询可能不一致，业务逻辑别依赖它。
+# 4. ReadView 只在第一次快照读时生成（RR），所以事务里“第一条 SELECT 的时机”决定你看到的世界。
+# 5. 长事务是 undo 膨胀的根源：版本链越来越长，purge 无法清理，磁盘和性能一起告急。
+# 6. 大事务回滚极慢，因为要顺着 undo 逆序执行；线上尽量拆小。
+# 7. innodb_flush_log_at_trx_commit=0/2 会牺牲持久性换性能，金融类业务别改。
+# 8. redo log 太小会导致频繁 checkpoint 刷脏页，写入出现周期性抖动，表现为“每隔一会儿卡一下”。
+# 9. delete 不是立即物理删除，而是打标记；表空间不会马上变小，需要 OPTIMIZE TABLE 或重建表回收。
+# 10. 别用 SELECT * 做超大范围快照读：会长时间持有 ReadView，间接拖住 purge。
